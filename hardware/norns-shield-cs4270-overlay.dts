@@ -1,0 +1,67 @@
+// Definitions for norns shield (rev < 211028) CS4270 codec
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	fragment@0 {
+		target = <&gpio>;
+		__overlay__ {
+			cs4270_reset_pin: cs4270_reset_pin {
+				gpio-hog;
+				gpios = <17 0>;
+				output-high;
+				line-name = "cs4270-reset";
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			cs4270: cs4270@48 {
+				#sound-dai-cells = <0>;
+				compatible = "cirrus,cs4270";
+				reg = <0x48>;
+				status = "okay";
+			};
+		};
+	};
+
+	fragment@2 {
+		target = <&i2s>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@3 {
+		target = <&sound>;
+		__overlay__ {
+			compatible = "simple-audio-card";
+			status = "okay";
+			simple-audio-card,name = "norns-shield-cs4270";
+			simple-audio-card,format = "i2s";
+			simple-audio-card,bitclock-master = <&dailink0_codec>;
+			simple-audio-card,frame-master = <&dailink0_codec>;
+
+			simple-audio-card,cpu {
+				sound-dai = <&i2s>;
+				dai-tdm-slot-num = <2>;
+				dai-tdm-slot-width = <32>;
+			};
+
+			dailink0_codec: simple-audio-card,codec {
+				sound-dai = <&cs4270>;
+				dai-tdm-slot-num = <2>;
+				dai-tdm-slot-width = <32>;
+				system-clock-frequency = <12288000>;
+			};
+		};
+	};
+};

@@ -1,0 +1,11 @@
+pyalsaaudio==0.11.0
+numpy==2.4.6
+mido==1.3.3
+python-rtmidi==1.5.8
+requests==2.34.2
+luma.oled==3.15.0
+lgpio==0.2.2.0
+pillow==12.2.0
+spidev==3.8
+smbus2==0.6.1
+rpi-lgpio==0.6
