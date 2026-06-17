@@ -1,0 +1,17 @@
+[Unit]
+Description=Norns WLED LED1/LED2 controller (demo_full.py)
+After=sound.target
+
+[Service]
+Type=simple
+User=ivanciko
+Group=ivanciko
+WorkingDirectory=/home/ivanciko/wled-controller
+ExecStart=/home/ivanciko/wled-controller/venv/bin/python3 -u demo_full.py
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
