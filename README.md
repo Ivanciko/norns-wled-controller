@@ -1,6 +1,6 @@
 # norns-wled-controller
 
-Audio and MIDI reactive LED controller built on a **Raspberry Pi 4** with a **monome norns shield**, controlling **WS2812B 2 LED strips** via **WLED** on an ESP32.
+Audio and MIDI reactive LED controller built on a **Raspberry Pi 4** with a **monome norns shield**, controlling **WS2812B 2 LED strips of 3m ** via **WLED** on an ESP32.
 
 The system runs fully autonomous — no computer needed. Boot the Pi and everything starts automatically: audio analysis, MIDI detection, WLED connection, and OLED menu.
 
