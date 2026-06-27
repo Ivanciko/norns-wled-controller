@@ -32,6 +32,14 @@ To check your revision, look at the PCB silkscreen on the back of the norns shie
 
 ---
 
+## Networking
+
+By default the Pi connects to the WiFi network created by the WLED ESP32 controller itself (**WLED-AP**, password `wled1234`). This is the standard WLED access point that every ESP32 running WLED creates out of the box — no router needed. Both devices talk directly to each other over this network, with the WLED ESP32 at `4.3.2.1`.
+
+The Pi can also connect to any other WiFi network (home router, etc.) from the SISTEMA menu. Saved networks reconnect automatically on boot without entering the password again.
+
+---
+
 ## What it does
 
 - **Audio reactive**: analyses the audio input in real time (16-band FFT) and fires light pulses or brightness kicks on every beat/onset
@@ -159,5 +167,6 @@ chmod +x setup.sh
 
 After setup:
 1. Copy `config.json.example` to `config.json`
-2. Edit `wled_host` to your ESP32's IP address
-3. `sudo reboot`
+2. Power on the ESP32 with WLED — it will create the **WLED-AP** network (`wled1234`)
+3. Connect the Pi to WLED-AP from the SISTEMA menu, or pre-set `wled_host` to `4.3.2.1` in `config.json`
+4. `sudo reboot`
