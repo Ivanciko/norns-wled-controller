@@ -45,6 +45,12 @@ class WLEDAnimator:
         self._ambient_color = (255, 80, 0)
         self._pulse_velocity = _DEFAULT_VELOCITY
         self._pulse_tail = _DEFAULT_TAIL
+        self._output_enabled = True
+        self._output_mode = "drgb"   # "drgb" o "preset"
+        self._preset_mode_id = 1     # preset activo en modo preset
+        self._preset_data = {}       # datos completos de presets.json
+        self._preset_bri_idle = 80   # brillo entre beats en modo preset (0-255)
+        self._preset_restore_at = None  # monotonic timestamp: cuando lanzar el fade de vuelta
 
         self.presets = {}
         self._pulses = []
@@ -89,12 +95,55 @@ class WLEDAnimator:
         self._pulse_velocity = float(value)
 
     @property
+    def output_enabled(self):
+        return self._output_enabled
+
+    @output_enabled.setter
+    def output_enabled(self, value):
+        self._output_enabled = bool(value)
+        if not self._output_enabled:
+            with self._lock:
+                self._pulses.clear()
+
+    @property
     def pulse_tail(self):
         return self._pulse_tail
 
     @pulse_tail.setter
     def pulse_tail(self, value):
         self._pulse_tail = int(value)
+
+    @property
+    def output_mode(self):
+        return self._output_mode
+
+    @output_mode.setter
+    def output_mode(self, value):
+        self._output_mode = value
+        if value == "preset":
+            with self._lock:
+                self._pulses.clear()
+            self._preset_restore_at = None
+            self.apply_preset(self._preset_mode_id)
+            self._wake.set()
+
+    @property
+    def preset_mode_id(self):
+        return self._preset_mode_id
+
+    @preset_mode_id.setter
+    def preset_mode_id(self, value):
+        self._preset_mode_id = int(value)
+        if self._output_mode == "preset":
+            self.apply_preset(self._preset_mode_id)
+
+    @property
+    def preset_bri_idle(self):
+        return self._preset_bri_idle
+
+    @preset_bri_idle.setter
+    def preset_bri_idle(self, value):
+        self._preset_bri_idle = int(value)
 
     def _update_bg(self):
         """Recalcula el buffer de fondo cuando cambia floor o color."""
@@ -130,11 +179,11 @@ class WLEDAnimator:
         try:
             r = requests.get(f"{self._base}/presets.json", timeout=2.0)
             data = r.json()
-            self.presets = {
-                int(k): v.get("n", f"Preset {k}")
-                for k, v in data.items()
+            self._preset_data = {
+                int(k): v for k, v in data.items()
                 if k != "0" and v.get("n")
             }
+            self.presets = {pid: v["n"] for pid, v in self._preset_data.items()}
         except Exception as e:
             print(f"WLED: no se pudieron cargar presets: {e}")
 
@@ -148,7 +197,15 @@ class WLEDAnimator:
 
     def trigger(self, seg_ids=None, velocity=1.0, color=(255, 255, 255),
                 reverse=True):
-        """Dispara un pulso independiente en los segmentos indicados."""
+        """Dispara un pulso (DRGB) o activa un preset WLED (modo preset)."""
+        if not self._output_enabled:
+            return
+        if self._output_mode == "preset":
+            # Flash instantáneo al máximo; el loop programa el fade de vuelta
+            self._preset_restore_at = time.monotonic() + 0.15
+            self._post_state({"bri": 255, "transition": 0})
+            self._wake.set()
+            return
         if seg_ids is None:
             seg_ids = list(range(len(self._seg_sizes)))
 
@@ -182,6 +239,24 @@ class WLEDAnimator:
         last = time.monotonic()
 
         while True:
+            # En modo preset WLED reproduce su efecto nativo: solo gestionamos el fade de bri
+            if self._output_mode == "preset":
+                restore_at = self._preset_restore_at
+                if restore_at is not None:
+                    now = time.monotonic()
+                    if now >= restore_at:
+                        self._preset_restore_at = None
+                        self._post_state({"bri": self._preset_bri_idle, "transition": 15})
+                        timeout = 1.0
+                    else:
+                        timeout = restore_at - now
+                else:
+                    timeout = 1.0
+                self._wake.wait(timeout=timeout)
+                self._wake.clear()
+                last = time.monotonic()
+                continue
+
             now = time.monotonic()
             dt = min(now - last, _max_dt)  # nunca mas de un frame activo de salto
             last = now
@@ -237,6 +312,8 @@ class WLEDAnimator:
             if vb > self._pixels[idx + 2]: self._pixels[idx + 2] = vb
 
     def _send(self):
+        if not self._output_enabled:
+            return
         try:
             self._udp.sendto(self._header + bytes(self._pixels), self._udp_addr)
         except OSError:

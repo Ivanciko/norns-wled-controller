@@ -63,12 +63,32 @@ def scan_wifi():
 
 def connect_wifi(ssid, password, on_done):
     """Conecta en segundo plano; on_done(ok, mensaje) se llama al terminar."""
+    con_name = f"wled-ctrl-{ssid}"
+
     def run():
-        args = ["sudo", "nmcli", "device", "wifi", "connect", ssid]
-        if password:
-            args += ["password", password]
         try:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+            # Borra perfil previo gestionado por el controlador para evitar conflictos
+            subprocess.run(
+                ["sudo", "nmcli", "connection", "delete", con_name],
+                capture_output=True, timeout=10,
+            )
+            # Crea perfil limpio
+            add_args = [
+                "sudo", "nmcli", "connection", "add",
+                "type", "wifi", "ifname", "wlan0",
+                "con-name", con_name, "ssid", ssid,
+                "ipv4.method", "auto",
+            ]
+            if password:
+                add_args += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]
+            r = subprocess.run(add_args, capture_output=True, text=True, timeout=15)
+            if r.returncode != 0:
+                on_done(False, r.stderr.strip() or "error al crear perfil")
+                return
+            result = subprocess.run(
+                ["sudo", "nmcli", "connection", "up", con_name],
+                capture_output=True, text=True, timeout=60,
+            )
             ok = result.returncode == 0
             msg = (result.stdout if ok else result.stderr).strip() or "error"
         except subprocess.TimeoutExpired:

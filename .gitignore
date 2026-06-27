@@ -1,0 +1,12 @@
+config.json
+venv/
+__pycache__/
+*.pyc
+.lgd-nfy0
+*.ko
+*.o
+*.mod.c
+*.mod
+modules.order
+Module.symvers
+.tmp_versions/

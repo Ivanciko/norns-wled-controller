@@ -34,17 +34,24 @@ BUTTONS = {
 
 # Tabla de cuadratura: combina (estado_anterior << 2) | estado_nuevo -> delta
 # estado = (A << 1) | B. Solo transiciones de codigo Gray (1 bit cambia) son validas.
+# Signos invertidos respecto al orden logico porque el hardware del norns shield
+# conecta A y B en orden opuesto al convenio estandar.
 _QUAD_TABLE = {
-    0b0001: +1, 0b0111: +1, 0b1110: +1, 0b1000: +1,
-    0b0010: -1, 0b1011: -1, 0b1101: -1, 0b0100: -1,
+    0b0001: -1, 0b0111: -1, 0b1110: -1, 0b1000: -1,
+    0b0010: +1, 0b1011: +1, 0b1101: +1, 0b0100: +1,
 }
+
+# Pasos de cuadratura a acumular antes de disparar un evento al callback.
+# Los encoders PEC11 del norns generan 2 transiciones por detent fisico,
+# asi que con _STEPS_PER_EVENT=2 se obtiene exactamente 1 evento por click.
+_STEPS_PER_EVENT = 2
 
 
 class Controls:
     def __init__(self, on_encoder=None, on_key=None, debounce_s=0.005, poll_interval=0.0005):
         """
         on_encoder(n, delta): se llama cuando el encoder n (1..3) gira.
-            delta es +1 o -1 por cada paso de cuadratura (4 pasos = 1 "click" tipico).
+            delta es +1 o -1 por cada detent fisico (click).
         on_key(n, pressed): se llama cuando el boton n (1..3) cambia de estado.
             pressed=True al pulsar, False al soltar.
         """
@@ -53,6 +60,7 @@ class Controls:
         self.debounce_s = debounce_s
         self.poll_interval = poll_interval
         self.h = lgpio.gpiochip_open(0)
+        self._enc_accum = {n: 0 for n in ENCODERS}
 
         self._enc_state = {}
         for n, pins in ENCODERS.items():
@@ -84,8 +92,13 @@ class Controls:
                     transition = (old_state << 2) | new_state
                     delta = _QUAD_TABLE.get(transition)
                     self._enc_state[n] = new_state
-                    if delta and self.on_encoder:
-                        self.on_encoder(n, delta)
+                    if delta:
+                        self._enc_accum[n] += delta
+                        if abs(self._enc_accum[n]) >= _STEPS_PER_EVENT:
+                            fire = 1 if self._enc_accum[n] > 0 else -1
+                            self._enc_accum[n] = 0
+                            if self.on_encoder:
+                                self.on_encoder(n, fire)
 
             now = time.monotonic()
             for n, pin in BUTTONS.items():

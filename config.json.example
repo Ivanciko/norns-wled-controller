@@ -1,0 +1,25 @@
+{
+  "audio_gain": 8.0,
+  "audio_volume": 10.0,
+  "audio_threshold": 0.36,
+  "segments": [
+    {"id": 0, "name": "LED1", "source": "audio", "audio_band": "all", "midi_channel": "all"},
+    {"id": 1, "name": "LED2", "source": "audio", "audio_band": "all", "midi_channel": "all"}
+  ],
+  "wled_host": "192.168.1.100",
+  "wled_preset": 1,
+  "wled_seg_sizes": [150, 150],
+  "wled_pulse_reverse": true,
+  "wled_pulse_color": [255, 80, 0],
+  "wled_tail": 20,
+  "wled_velocity": 110,
+  "wled_bri_floor": 0,
+  "wled_output_enabled": true,
+  "output_mode": "drgb",
+  "wled_preset_mode_id": 1,
+  "wled_preset_bri_idle": 80,
+  "oled_contrast": 127,
+  "ap_ssid": "LightReactive",
+  "ap_password": "lightreact",
+  "wifi_saved": {}
+}
