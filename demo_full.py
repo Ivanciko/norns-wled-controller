@@ -19,6 +19,7 @@ from midi_input import MidiInput
 from router import Router, band_level
 from ssd1322_norns import ssd1322_norns
 from wled_animator import WLEDAnimator
+from wled_audio_sync import WLEDAudioSync
 
 N_BANDS = 16
 
@@ -51,6 +52,11 @@ else:
 
 wled.brightness = config.get("wled_brightness", 255)
 
+# Datos de audio hacia el usermod "Audio Reactive" de WLED (protocolo UDP
+# sync, distinto del streaming DRGB de arriba) - sin esto los presets/efectos
+# nativos audio-reactivos de WLED no tienen a que reaccionar.
+audio_sync = WLEDAudioSync(WLED_HOST)
+
 _beat_armed = {strip["id"]: True for strip in config["strips"]}
 
 
@@ -62,6 +68,8 @@ def on_levels(levels):
     gain = config.get("audio_gain", 1.0)
     threshold = max(config.get("audio_threshold", 0.0), 0.05)
     reverse = config.get("wled_pulse_reverse", True)
+
+    audio_sync.send(levels, analyzer.band_centers, gain=gain, threshold=threshold)
 
     for strip in config["strips"]:
         if (not strip.get("active", True) or strip["fx"] != "reactive"
@@ -85,6 +93,23 @@ def on_midi(msg, device_name):
     if msg.type != "note_on" or msg.velocity <= 0:
         return
     ch = msg.channel + 1
+    velocity = msg.velocity / 127.0
+
+    # Nota relevante para el audio-sync hacia WLED (efectos/presets nativos
+    # audio-reactivos) siempre que alguna tira la escuche, sin importar si
+    # esa tira esta en modo pulso DRGB ("reactive") o en modo preset - el
+    # audio-sync es una señal global del dispositivo, no depende de eso.
+    midi_relevant = any(
+        strip.get("active", True) and strip["source"] in ("midi", "both")
+        and (strip["midi_channel"] == "all" or strip["midi_channel"] == ch)
+        and (strip.get("midi_device", "all") in ("all", device_name))
+        for strip in config["strips"]
+    )
+    if midi_relevant:
+        audio_sync.note_on(velocity)
+
+    # Pulso DRGB reactivo: solo para tiras en modo "reactive" (las de modo
+    # preset no reciben pixeles nuestros, para no tapar el efecto nativo).
     matching = [
         strip for strip in config["strips"]
         if strip.get("active", True) and strip["fx"] == "reactive"
@@ -94,9 +119,9 @@ def on_midi(msg, device_name):
     ]
     if not matching:
         return
-    velocity = msg.velocity / 127.0
     reverse = config.get("wled_pulse_reverse", True)
     router.flash(velocity=velocity, segments=[s["id"] for s in matching])
+
     for strip in matching:
         wled.trigger(
             seg_ids=[cfg.animator_index(config, strip["id"])], velocity=velocity, color=tuple(strip["pulse_color"]),
@@ -127,5 +152,6 @@ finally:
     controls.close()
     analyzer.close()
     wled.stop()
+    audio_sync.close()
     device.cleanup()
     print("\nListo, saliendo.")

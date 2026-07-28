@@ -48,6 +48,7 @@ class AudioAnalyzer:
 
         freqs = np.fft.rfftfreq(blocksize, d=1.0 / samplerate)
         edges = np.geomspace(fmin, fmax, n_bands + 1)
+        self.band_centers = np.sqrt(edges[:-1] * edges[1:])  # Hz, centro geometrico de cada banda
         self._bin_idx = []
         for i in range(n_bands):
             lo, hi = edges[i], edges[i + 1]
