@@ -10,6 +10,7 @@ Expone una interfaz compatible con luma.core.render.canvas:
   - .display(image)
   - .contrast(value)
 """
+import threading
 import time
 
 import lgpio
@@ -36,6 +37,11 @@ class ssd1322_norns:
 
         self._dc = dc_line
         self._reset = reset_line
+        # display() corre en el hilo principal (loop de render) mientras
+        # contrast() se llama desde el hilo de Controls (callback de encoder) -
+        # sin este candado, un cambio de contraste puede interrumpir a mitad
+        # una transferencia SPI de frame y perderse o corromper el D/C.
+        self._lock = threading.Lock()
         self._h = lgpio.gpiochip_open(gpio_chip)
         lgpio.gpio_claim_output(self._h, self._dc, 0)
         lgpio.gpio_claim_output(self._h, self._reset, 1)
@@ -76,7 +82,8 @@ class ssd1322_norns:
         self._cmd(0xA0, remap)
 
     def contrast(self, value):
-        self._cmd(0xC1, [value & 0xFF])
+        with self._lock:
+            self._cmd(0xC1, [value & 0xFF])
 
     def display(self, image):
         if image.mode != "L":
@@ -90,18 +97,19 @@ class ssd1322_norns:
             # ambos nibbles del byte (igual que hace norns con NEON).
             data[i] = (v & 0xF0) | (v >> 4)
 
-        self._cmd(0x15, [28, 91])  # ventana de columnas (offset 28!)
-        self._cmd(0x75, [0, 63])   # ventana de filas
-        self._cmd(0x5C)            # write RAM
+        with self._lock:
+            self._cmd(0x15, [28, 91])  # ventana de columnas (offset 28!)
+            self._cmd(0x75, [0, 63])   # ventana de filas
+            self._cmd(0x5C)            # write RAM
 
-        lgpio.gpio_write(self._h, self._dc, 1)
-        chunk = 4096
-        for i in range(0, len(data), chunk):
-            self._spi.writebytes(list(data[i:i + chunk]))
+            lgpio.gpio_write(self._h, self._dc, 1)
+            chunk = 4096
+            for i in range(0, len(data), chunk):
+                self._spi.writebytes(list(data[i:i + chunk]))
 
-        if self._should_turn_on:
-            self._cmd(0xAF)  # display on (solo tras el primer frame)
-            self._should_turn_on = False
+            if self._should_turn_on:
+                self._cmd(0xAF)  # display on (solo tras el primer frame)
+                self._should_turn_on = False
 
     def cleanup(self):
         self._cmd(0xAE)  # display off (sin forzar reset de hardware)

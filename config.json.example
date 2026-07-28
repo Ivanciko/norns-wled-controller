@@ -2,22 +2,16 @@
   "audio_gain": 8.0,
   "audio_volume": 10.0,
   "audio_threshold": 0.36,
-  "segments": [
-    {"id": 0, "name": "LED1", "source": "audio", "audio_band": "all", "midi_channel": "all"},
-    {"id": 1, "name": "LED2", "source": "audio", "audio_band": "all", "midi_channel": "all"}
+  "strips": [
+    {"id": 0, "name": "Tira 1", "length_m": 3, "num_leds": 150, "pin": "IO16", "source": "audio", "audio_band": "all", "midi_channel": "all", "pulse_color": [255, 80, 0], "pulse_velocity": 150, "pulse_tail": 30, "fx": "reactive", "fx_speed": 128, "bri_floor": 0},
+    {"id": 1, "name": "Tira 2", "length_m": 3, "num_leds": 150, "pin": "IO12", "source": "audio", "audio_band": "all", "midi_channel": "all", "pulse_color": [255, 80, 0], "pulse_velocity": 150, "pulse_tail": 30, "fx": "reactive", "fx_speed": 128, "bri_floor": 0},
+    {"id": 2, "name": "Tira 3", "length_m": 5, "num_leds": 250, "pin": "IO4", "source": "audio", "audio_band": "all", "midi_channel": "all", "pulse_color": [255, 80, 0], "pulse_velocity": 150, "pulse_tail": 30, "fx": "reactive", "fx_speed": 128, "bri_floor": 0},
+    {"id": 3, "name": "Tira 4", "length_m": 5, "num_leds": 250, "pin": "IO2", "source": "audio", "audio_band": "all", "midi_channel": "all", "pulse_color": [255, 80, 0], "pulse_velocity": 150, "pulse_tail": 30, "fx": "reactive", "fx_speed": 128, "bri_floor": 0}
   ],
   "wled_host": "192.168.1.100",
   "wled_preset": 1,
-  "wled_seg_sizes": [150, 150],
   "wled_pulse_reverse": true,
-  "wled_pulse_color": [255, 80, 0],
-  "wled_tail": 20,
-  "wled_velocity": 110,
-  "wled_bri_floor": 0,
   "wled_output_enabled": true,
-  "output_mode": "drgb",
-  "wled_preset_mode_id": 1,
-  "wled_preset_bri_idle": 80,
   "oled_contrast": 127,
   "ap_ssid": "LightReactive",
   "ap_password": "lightreact",

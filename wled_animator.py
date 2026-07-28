@@ -1,13 +1,22 @@
-"""Animacion de pulsos sobre WLED via UDP (protocolo DRGB).
+"""Animacion de pulsos sobre WLED via UDP (protocolo DRGB), mas control de
+presets y efectos nativos WLED via HTTP JSON.
 
 Cada llamada a trigger() lanza un pulso nuevo e independiente: sale del
 extremo del segmento y fluye hasta el otro extremo a 30 fps. Si llegan
 varios triggers seguidos, varios pulsos viajan a la vez, cada uno en
-su propia posicion.
+su propia posicion. Velocidad y cola del pulso son por defecto las de la
+instancia, pero cada llamada puede pasar las suyas (para que cada tira
+tenga las suyas propias).
 
 WLED recibe los datos de pixel en crudo via UDP (DRGB, puerto 21324) y
 entra en modo live. Cuando no hay pulsos, se envia un frame de mantenimiento
 a 2fps (solo para que WLED no salga de live mode) con el color ambiente.
+
+Ademas de DRGB, una tira puede configurarse en modo "efecto nativo WLED"
+(ver set_segment_effect): en ese caso el pulso reactivo no se usa para esa
+tira y en su lugar corre un efecto WLED continuo sobre su segmento nativo
+(requiere que WLED tenga definidos Segments que coincidan con los rangos de
+cada tira, ademas de los Outputs fisicos).
 """
 import socket
 import threading
@@ -21,12 +30,13 @@ _FPS_ACTIVE = 30    # fps mientras hay pulsos en movimiento
 _FPS_IDLE = 2       # fps cuando no hay pulsos (solo keepalive)
 _DEFAULT_VELOCITY = 150.0   # LEDs/segundo
 _DEFAULT_TAIL = 30          # LEDs de cola
+_RETRY_DELAY = 10.0         # segundos entre reintentos de carga (presets/efectos)
 
 
 class WLEDAnimator:
-    """Gestiona presets (via HTTP) y animacion de pulsos (via UDP/DRGB)."""
+    """Gestiona presets/efectos (via HTTP) y animacion de pulsos (via UDP/DRGB)."""
 
-    def __init__(self, host, seg_sizes=(150, 150), udp_port=21324,
+    def __init__(self, host, seg_sizes=(150, 150, 250, 250), udp_port=21324,
                  on_presets_loaded=None):
         self._base = f"http://{host}"
         self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -41,49 +51,51 @@ class WLEDAnimator:
         self._bg = bytearray(self._n_leds * 3)  # fondo precalculado
         self._header = bytes([_DRGB_TYPE, _DRGB_TIMEOUT])
 
-        self._bri_floor = 0
-        self._ambient_color = (255, 80, 0)
+        self._seg_ambient = {}  # seg_id -> (bri_floor:int, color:tuple), ver set_segment_ambient
         self._pulse_velocity = _DEFAULT_VELOCITY
         self._pulse_tail = _DEFAULT_TAIL
         self._output_enabled = True
-        self._output_mode = "drgb"   # "drgb" o "preset"
-        self._preset_mode_id = 1     # preset activo en modo preset
+        self._brightness = 255       # brillo maestro WLED (0-255), ver propiedad brightness
         self._preset_data = {}       # datos completos de presets.json
-        self._preset_bri_idle = 80   # brillo entre beats en modo preset (0-255)
-        self._preset_restore_at = None  # monotonic timestamp: cuando lanzar el fade de vuelta
 
         self.presets = {}
+        self.effects = []
         self._pulses = []
         self._lock = threading.Lock()
         self._wake = threading.Event()  # despierta el loop al instante en cada trigger
 
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        # Intento inicial; si falla (ESP32 aun arrancando), reintenta en background
+
+        # Intentos iniciales; si fallan (controlador aun arrancando), reintenta en background.
+        # Si los presets ya estan disponibles de inmediato, el llamador (fuera de esta clase)
+        # es responsable de consultar `self.presets` tras construir el objeto - no invocamos
+        # on_presets_loaded aqui de forma sincrona porque en ese momento la variable que
+        # referencia a esta misma instancia (en el codigo del llamador) puede no existir aun.
         self.load_presets()
         if not self.presets:
-            threading.Thread(target=self._retry_load_presets, daemon=True).start()
+            threading.Thread(
+                target=self._retry_until_loaded,
+                args=(self.load_presets, lambda: bool(self.presets), "presets"),
+                daemon=True,
+            ).start()
+
+        self.load_effects()
+        if not self.effects:
+            threading.Thread(
+                target=self._retry_until_loaded,
+                args=(self.load_effects, lambda: bool(self.effects), "efectos"),
+                daemon=True,
+            ).start()
 
     # ------------------------------------------------------------------ #
     # Propiedades configurables desde fuera                                #
     # ------------------------------------------------------------------ #
 
-    @property
-    def bri_floor(self):
-        return self._bri_floor
-
-    @bri_floor.setter
-    def bri_floor(self, value):
-        self._bri_floor = int(value)
-        self._update_bg()
-
-    @property
-    def ambient_color(self):
-        return self._ambient_color
-
-    @ambient_color.setter
-    def ambient_color(self, value):
-        self._ambient_color = tuple(value)
+    def set_segment_ambient(self, seg_id, bri_floor, color):
+        """Brillo/color ambiente (entre pulsos) de una tira concreta.
+        0=apagado entre pulsos, >0=glow tenue con `color`."""
+        self._seg_ambient[seg_id] = (int(bri_floor), tuple(color))
         self._update_bg()
 
     @property
@@ -114,66 +126,54 @@ class WLEDAnimator:
         self._pulse_tail = int(value)
 
     @property
-    def output_mode(self):
-        return self._output_mode
+    def brightness(self):
+        """Brillo maestro de WLED (0-255) - escala por encima de cada pixel
+        que mandamos por DRGB, incluidos pulsos y ambiente. Distinto del
+        `bri_floor` por tira (ese es solo el nivel del glow ambiente que
+        nosotros calculamos por pixel)."""
+        return self._brightness
 
-    @output_mode.setter
-    def output_mode(self, value):
-        self._output_mode = value
-        if value == "preset":
-            with self._lock:
-                self._pulses.clear()
-            self._preset_restore_at = None
-            self.apply_preset(self._preset_mode_id)
-            self._wake.set()
-
-    @property
-    def preset_mode_id(self):
-        return self._preset_mode_id
-
-    @preset_mode_id.setter
-    def preset_mode_id(self, value):
-        self._preset_mode_id = int(value)
-        if self._output_mode == "preset":
-            self.apply_preset(self._preset_mode_id)
-
-    @property
-    def preset_bri_idle(self):
-        return self._preset_bri_idle
-
-    @preset_bri_idle.setter
-    def preset_bri_idle(self, value):
-        self._preset_bri_idle = int(value)
+    @brightness.setter
+    def brightness(self, value):
+        self._brightness = int(value)
+        self._post_state({"bri": self._brightness})
 
     def _update_bg(self):
-        """Recalcula el buffer de fondo cuando cambia floor o color."""
-        floor = self._bri_floor
-        r0, g0, b0 = self._ambient_color
-        ri = int(r0 * floor / 255)
-        gi = int(g0 * floor / 255)
-        bi = int(b0 * floor / 255)
-        for i in range(self._n_leds):
-            self._bg[i * 3]     = ri
-            self._bg[i * 3 + 1] = gi
-            self._bg[i * 3 + 2] = bi
+        """Recalcula el buffer de fondo cuando cambia el ambiente de alguna
+        tira. Cada segmento usa su propio floor/color (0,(0,0,0) si nunca
+        se configuro con set_segment_ambient)."""
+        offset = 0
+        for seg_id, size in enumerate(self._seg_sizes):
+            floor, color = self._seg_ambient.get(seg_id, (0, (0, 0, 0)))
+            r0, g0, b0 = color
+            ri = int(r0 * floor / 255)
+            gi = int(g0 * floor / 255)
+            bi = int(b0 * floor / 255)
+            for j in range(size):
+                idx = (offset + j) * 3
+                self._bg[idx] = ri
+                self._bg[idx + 1] = gi
+                self._bg[idx + 2] = bi
+            offset += size
 
     # ------------------------------------------------------------------ #
-    # Preset API                                                           #
+    # Carga de presets / efectos (whole-device)                            #
     # ------------------------------------------------------------------ #
 
-    def _retry_load_presets(self, delay=10.0):
-        """Reintenta cargar presets indefinidamente hasta que WLED responda."""
+    def _retry_until_loaded(self, loader, has_result, label, delay=_RETRY_DELAY):
+        """Reintenta `loader` indefinidamente hasta que `has_result()` sea
+        verdadero. Usado tanto para presets como para efectos."""
         attempt = 0
         while True:
             time.sleep(delay)
             attempt += 1
-            self.load_presets()
-            if self.presets:
-                print(f"WLED: presets cargados tras {attempt} reintento(s) ({len(self.presets)} presets)")
-                if self._on_presets_loaded:
+            loader()
+            if has_result():
+                print(f"WLED: {label} cargados tras {attempt} reintento(s)")
+                if label == "presets" and self._on_presets_loaded:
                     self._on_presets_loaded(self.presets)
                 return
-            print(f"WLED: intento {attempt} fallido, reintentando en {delay}s...")
+            print(f"WLED: {label} - intento {attempt} fallido, reintentando en {delay}s...")
 
     def load_presets(self):
         try:
@@ -191,23 +191,40 @@ class WLEDAnimator:
         self._current_preset = preset_id
         self._post_state({"ps": preset_id})
 
+    def load_effects(self):
+        try:
+            r = requests.get(f"{self._base}/json/eff", timeout=2.0)
+            self.effects = list(r.json())
+        except Exception as e:
+            print(f"WLED: no se pudieron cargar efectos: {e}")
+
+    def set_segment_effect(self, seg_id, fx, sx=None, color=None):
+        """Aplica un efecto nativo WLED de forma continua al segmento
+        `seg_id` (requiere que ese Segment exista en WLED con el mismo
+        rango que la tira). `sx` es la velocidad del efecto (0-255)."""
+        seg = {"id": seg_id, "fx": int(fx)}
+        if sx is not None:
+            seg["sx"] = int(sx)
+        if color is not None:
+            seg["col"] = [list(color)]
+        self._post_state({"seg": [seg]})
+
     # ------------------------------------------------------------------ #
     # Pulse API                                                            #
     # ------------------------------------------------------------------ #
 
     def trigger(self, seg_ids=None, velocity=1.0, color=(255, 255, 255),
-                reverse=True):
-        """Dispara un pulso (DRGB) o activa un preset WLED (modo preset)."""
+                reverse=True, pulse_velocity=None, pulse_tail=None):
+        """Dispara un pulso DRGB reactivo. `pulse_velocity`/`pulse_tail`
+        sobrescriben, solo para este disparo, los valores por defecto de la
+        instancia (permite que cada tira tenga su propia velocidad/cola)."""
         if not self._output_enabled:
-            return
-        if self._output_mode == "preset":
-            # Flash instantáneo al máximo; el loop programa el fade de vuelta
-            self._preset_restore_at = time.monotonic() + 0.15
-            self._post_state({"bri": 255, "transition": 0})
-            self._wake.set()
             return
         if seg_ids is None:
             seg_ids = list(range(len(self._seg_sizes)))
+
+        vel = self._pulse_velocity if pulse_velocity is None else float(pulse_velocity)
+        tail = self._pulse_tail if pulse_tail is None else int(pulse_tail)
 
         offset = 0
         with self._lock:
@@ -221,10 +238,10 @@ class WLEDAnimator:
                         "start": offset,
                         "n": size,
                         "pos": 0.0,
-                        "vel": self._pulse_velocity,
+                        "vel": vel,
                         "bri": float(min(1.0, max(0.2, velocity))),
                         "color": color,
-                        "tail": self._pulse_tail,
+                        "tail": tail,
                         "reverse": reverse,
                     })
                 offset += size
@@ -239,24 +256,6 @@ class WLEDAnimator:
         last = time.monotonic()
 
         while True:
-            # En modo preset WLED reproduce su efecto nativo: solo gestionamos el fade de bri
-            if self._output_mode == "preset":
-                restore_at = self._preset_restore_at
-                if restore_at is not None:
-                    now = time.monotonic()
-                    if now >= restore_at:
-                        self._preset_restore_at = None
-                        self._post_state({"bri": self._preset_bri_idle, "transition": 15})
-                        timeout = 1.0
-                    else:
-                        timeout = restore_at - now
-                else:
-                    timeout = 1.0
-                self._wake.wait(timeout=timeout)
-                self._wake.clear()
-                last = time.monotonic()
-                continue
-
             now = time.monotonic()
             dt = min(now - last, _max_dt)  # nunca mas de un frame activo de salto
             last = now

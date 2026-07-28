@@ -1,6 +1,6 @@
 # norns-wled-controller
 
-Audio and MIDI reactive LED controller built on a **Raspberry Pi 4** with a **monome norns shield**, controlling **WS2812B 2 LED strips of 3m** via **WLED** on an ESP32.
+Audio and MIDI reactive LED controller built on a **Raspberry Pi 4** with a **monome norns shield**, controlling up to **4 WS2812B LED strips** via **WLED** (tested with a GLEDOPTO 4-channel Ethernet controller).
 
 The system runs fully autonomous — no computer needed. Boot the Pi and everything starts automatically: audio analysis, MIDI detection, WLED connection, and OLED menu.
 
@@ -12,10 +12,12 @@ The system runs fully autonomous — no computer needed. Boot the Pi and everyth
 |---|---|
 | **Raspberry Pi 4** | Runs the controller software |
 | **monome norns shield** | OLED display, 3 encoders, 3 buttons, I2S audio codec |
-| **ESP32 + WLED** | Controls the LED strips (tested with Gledopto, WLED v16.0.0) |
-| **WS2812B LED strips** | 2 × 150 LEDs, physically mounted from a central point outward |
+| **WLED controller** | GLEDOPTO Elite 4D-EXMU (4 channels, Ethernet), WLED v16.0.0 |
+| **WS2812B LED strips** | Up to 4, independently configurable length/LED count/pin — see `config.json` `strips` |
 | **Audio source** | Any line-level audio in to the norns shield jack |
 | **MIDI controller** | Any USB-MIDI device (tested with Elektron Digitakt) |
+
+The number of strips is not hardcoded — `router.py`, `wled_animator.py` and the OLED menu all size themselves from the `strips` list in `config.json` (see `config.py`).
 
 ---
 
@@ -42,9 +44,9 @@ The Pi can also connect to any other WiFi network (home router, etc.) from the S
 
 ## What it does
 
-- **Audio reactive**: analyses the audio input in real time (16-band FFT) and fires light pulses or brightness kicks on every beat/onset
-- **MIDI reactive**: a `note_on` message from any connected USB-MIDI device fires a pulse
-- **Two output modes**: DRGB (pixel-perfect pulse animation streamed at 30fps) or Preset (brightness kick on any native WLED effect)
+- **Audio reactive**: analyses the audio input in real time (16-band FFT) and fires light pulses on every beat/onset, per strip
+- **MIDI reactive**: a `note_on` message from any connected USB-MIDI device fires a pulse on the strips listening on that channel
+- **Per-strip effect**: each strip independently runs either the reactive DRGB pulse, or a continuous native WLED effect (see Effects below)
 - **Autonomous boot**: runs as a systemd user service, starts on power-on with no interaction needed
 - **MIDI hot-plug**: if the MIDI device is not connected at boot, the system polls every 3 seconds and connects automatically when it appears
 - **WiFi management**: connect to saved networks or new networks from the OLED menu, no keyboard needed
@@ -53,32 +55,25 @@ The Pi can also connect to any other WiFi network (home router, etc.) from the S
 
 ## OLED Menu
 
-**K1 short** cycles through pages. **K1 hold (~1.2s)** enters the SISTEMA screen. **K3 (any page)** toggles WLED output ON/OFF — header shows `W:OFF` when disabled, `W:PRE` when in Preset mode.
+**K1 short** cycles through the 5 root pages. **K1 hold (~1.2s)** enters the SISTEMA screen (from anywhere, back with K1 hold again). **K2 short** (root pages only) toggles the clean VU-only performance view. **K3 short** toggles WLED output ON/OFF, except on the TIRAS page where K3 enters the selected strip's detail screen.
 
-### Pages
+### Root pages
 
-| Page | E1 | E2 | E3 |
-|---|---|---|---|
-| **LED1 / LED2** | Source: audio / midi / both | Audio band: bass / mid / treble / all | MIDI channel: 1 / 2 / 3 / all |
-| **GLOBAL** | Audio input gain | Output volume | Detection threshold |
-| **WLED** | Output mode: DRGB / PRESET *(see below)* | *depends on mode* | *depends on mode* |
-| **BRILLO** | WLED ambient brightness between pulses (0–200) | OLED screen brightness (0–255) | — |
-
-### WLED page — DRGB mode
-
-| Control | Action |
+| Page | Content |
 |---|---|
-| E1 | Switch to PRESET mode |
-| E2 | Pulse speed (20–600 LEDs/s) |
-| E3 | Pulse tail length (5–150 LEDs) |
+| **TIRAS** | All strips at once: name, source letter, level bar; footer shows size/LED count/pin of the strip highlighted with E1. K3 opens that strip's detail |
+| **FUENTES** | E1 audio input gain, E2 output volume, E3 detection threshold |
+| **WLED/RED** | WLED host, pulse direction (reverse), presets/effects loaded count |
+| **PRESETS** | E1 cycles WLED's own saved presets, applied instantly (whole device) |
+| **BRILLO** | E1 adjusts OLED screen contrast |
 
-### WLED page — PRESET mode
+### Strip detail (from TIRAS, K3 on the highlighted strip)
 
-| Control | Action |
-|---|---|
-| E1 | Switch to DRGB mode |
-| E2 | Select which WLED preset to trigger on each beat |
-| E3 | Idle brightness between beats (0 = black, 255 = always full) |
+E2 moves the field cursor, E1/E3 adjust the active field's value. Fields (shown conditionally): Source (audio/midi/both) → Audio band → MIDI channel → Color (curated palette) → Effect (reactive pulse, or any native WLED effect) → Speed → Tail (reactive only) → Ambient brightness. K3 returns to TIRAS.
+
+### Clean VU mode (K2 on any root page)
+
+Four large vertical level bars, no text — meant for live performance. K2 again returns to the menu.
 
 ### SISTEMA screen (K1 hold)
 
@@ -93,35 +88,14 @@ Shows current WiFi network and IP address.
 
 ---
 
-## Output Modes
+## Per-strip effects
 
-### DRGB mode (default)
+Each strip's **Effect** field (strip detail screen) picks between:
 
-The Pi calculates pixel data for each pulse — position, tail, fade curve — and streams it to the ESP32 at 30fps via UDP (WLED DRGB protocol). WLED stays in live mode and renders exactly what the Pi sends. This gives pixel-perfect control of speed, tail length, and color.
+- **Reactive pulse (default)**: the Pi calculates pixel data for each pulse — position, tail, fade curve — and streams it to WLED at 30fps via UDP (DRGB protocol). Speed and Tail control the pulse shape; multiple simultaneous pulses coexist using max blending (not additive).
+- **Any native WLED effect**: the strip runs that WLED effect continuously on its own WLED Segment (`fx`/`sx`/`col` via the JSON API) — the Pi does not drive it beat-by-beat. Requires WLED to have a Segment defined matching that strip's LED range (see Installation).
 
-Multiple simultaneous pulses coexist using max blending (not additive), so overlapping pulses at high BPM don't saturate the strip.
-
-### PRESET mode
-
-The Pi keeps detecting beats and onsets as usual, but instead of streaming pixels it sends a **brightness kick** to WLED on each beat: an instant flash to full brightness (`bri=255`) followed by a smooth fade back to the configured idle brightness over ~1.5 seconds. WLED plays its own native effect continuously — the Pi just modulates the brightness.
-
-This works with any WLED effect (Meteor, Comet, Fireworks, Wavesins, etc.). The effect runs freely between beats; each beat lights it up. The **idle brightness** (E3) controls how visible the effect is between beats: `0` = black between flashes for a strobe feel, `80` = soft ambient glow, `255` = always at full brightness.
-
-Switch modes instantly from the WLED page with E1 — no restart needed.
-
----
-
-## How pulses work (DRGB mode)
-
-Each audio onset or MIDI note fires an independent light pulse per LED strip. Pulse parameters:
-
-| Parameter | Range | Control |
-|---|---|---|
-| Speed | 20–600 LEDs/s | WLED page E2 |
-| Tail length | 5–150 LEDs | WLED page E3 |
-| Color | RGB | `wled_pulse_color` in config |
-| Direction | normal / reverse | `wled_pulse_reverse` in config |
-| Ambient glow | 0–200 | BRILLO page E1 |
+Ambient brightness (0–200, per strip) sets the idle glow shown between reactive pulses; it has no effect while a strip is in native-effect mode.
 
 ---
 
@@ -141,18 +115,20 @@ Each audio onset or MIDI note fires an independent light pulse per LED strip. Pu
 
 | File | Purpose |
 |---|---|
-| `demo_full.py` | Main entry point — menu, audio/MIDI callbacks, OLED render loop |
+| `demo_full.py` | Main entry point — wires audio/MIDI/WLED/display, render loop |
+| `display.py` | OLED menu: all screens, encoder/button handling |
+| `config.py` | `strips` schema, config load/save, legacy-schema migration |
 | `audio_analysis.py` | AudioAnalyzer — 16-band FFT, noise floor calibration, passthrough |
-| `wled_animator.py` | WLED client — DRGB pulse animation (30fps) and Preset brightness kick |
+| `wled_animator.py` | WLED client — DRGB pulse animation (30fps), presets, per-segment native effects |
 | `midi_input.py` | MIDI input with hot-plug detection |
 | `controls.py` | Encoder and button driver (polling-based, 1 event per physical click) |
 | `ssd1322_norns.py` | SSD1322 OLED driver |
-| `router.py` | Audio level routing + config persistence |
+| `router.py` | Audio level → per-strip brightness routing (drives the OLED bars) |
 | `system_control.py` | WiFi (nmcli) and shutdown helpers |
 | `wled-controller.service` | systemd user service file |
-| `config.json.example` | Config template — copy to `config.json` and edit `wled_host` |
+| `config.json.example` | Config template — copy to `config.json` and edit `wled_host`/`strips` |
 
-`config.json` is excluded from the repo (contains WiFi credentials). On a fresh install, copy `config.json.example` to `config.json` and set your WLED ESP32 IP in `wled_host`.
+`config.json` is excluded from the repo (contains WiFi credentials). On a fresh install, copy `config.json.example` to `config.json` and set your WLED IP in `wled_host`. Configs saved by an older 2-strip version of this project are migrated automatically on first load (see `config.py`).
 
 ---
 
@@ -166,7 +142,8 @@ chmod +x setup.sh
 ```
 
 After setup:
-1. Copy `config.json.example` to `config.json`
-2. Power on the ESP32 with WLED — it will create the **WLED-AP** network (`wled1234`)
-3. Connect the Pi to WLED-AP from the SISTEMA menu, or pre-set `wled_host` to `4.3.2.1` in `config.json`
-4. `sudo reboot`
+1. Copy `config.json.example` to `config.json`, edit `strips` to match your physical wiring (length/LED count/pin are informational, shown in the TIRAS screen) and set `wled_host`
+2. In the WLED web UI, set up the LED Preferences (Outputs) matching your strips' start/length/pin, and set the PSU current limit safely below your power supply's real max
+3. If any strip will use a native WLED effect (not the default reactive pulse), also define a matching WLED **Segment** for it (same LED range as the strip) — required for per-strip `fx` control
+4. Connect the Pi to your WLED controller's network from the SISTEMA menu, or pre-set `wled_host` in `config.json`
+5. `sudo reboot`

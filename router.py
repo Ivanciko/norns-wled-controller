@@ -1,41 +1,17 @@
 """Router (Fase 5+): convierte niveles de audio por banda + eventos MIDI en el
-estado de los segmentos WLED (solo brillo/on-off), segun la configuracion por
-tira (LED1/LED2) en config.json.
+estado de las tiras WLED (solo brillo/on-off), segun la configuracion por
+tira (`strips` en config.json, ver config.py).
 
 El resultado tiene la forma del JSON API de WLED:
     {"seg": [{"id": 0, "on": true, "bri": 180}, ...]}
 listo para enviarse tal cual a `POST /json/state` (Fase 6, aun no implementada).
 
-El color de cada segmento NO se gestiona aqui: se configura directamente en
-WLED.
+El color de cada segmento NO se gestiona aqui: se configura por tira
+(pulse_color) y se aplica en wled_animator.trigger().
 """
-import json
 import time
 
 import numpy as np
-
-DEFAULT_CONFIG = {
-    "audio_gain": 1.0,
-    "audio_volume": 1.0,
-    "audio_threshold": 0.0,
-    "segments": [
-        {"id": 0, "name": "LED1", "source": "audio", "audio_band": "all", "midi_channel": "all"},
-        {"id": 1, "name": "LED2", "source": "audio", "audio_band": "all", "midi_channel": "all"},
-    ],
-}
-
-
-def load_config(path="config.json"):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return json.loads(json.dumps(DEFAULT_CONFIG))  # copia profunda
-
-
-def save_config(config, path="config.json"):
-    with open(path, "w") as f:
-        json.dump(config, f, indent=2)
 
 
 def band_level(levels, band):
@@ -58,13 +34,13 @@ class Router:
         self._min_interval = 1.0 / rate_hz
         self._last_update = 0.0
         self._flash_half_life = flash_half_life
-        self._flash = {seg["id"]: 0.0 for seg in config["segments"]}
+        self._flash = {strip["id"]: 0.0 for strip in config["strips"]}
 
     def flash(self, velocity=1.0, segments=None):
         """Dispara un destello (p.ej. desde un note_on MIDI). `velocity` en
         0..1 fija la intensidad inicial; decae exponencialmente con
         `flash_half_life` en cada `update()` posterior. `segments`, si se
-        da, limita el destello a esos ids de segmento."""
+        da, limita el destello a esos ids de tira."""
         ids = segments if segments is not None else self._flash.keys()
         for seg_id in ids:
             self._flash[seg_id] = max(self._flash.get(seg_id, 0.0), velocity)
@@ -82,20 +58,20 @@ class Router:
         threshold = self.config.get("audio_threshold", 0.0)
 
         segments = []
-        for seg in self.config["segments"]:
+        for strip in self.config["strips"]:
             audio_bri = 0
-            if seg["source"] in ("audio", "both"):
-                level = float(np.clip(band_level(levels, seg["audio_band"]) * gain, 0.0, 1.0))
+            if strip["source"] in ("audio", "both"):
+                level = float(np.clip(band_level(levels, strip["audio_band"]) * gain, 0.0, 1.0))
                 if level <= threshold:
                     level = 0.0
                 elif threshold > 0.0:
                     level = (level - threshold) / (1.0 - threshold)
                 audio_bri = int(round(level * 255))
 
-            flash_level = self._flash.get(seg["id"], 0.0)
+            flash_level = self._flash.get(strip["id"], 0.0)
             flash_bri = int(round(flash_level * 255))
-            self._flash[seg["id"]] = flash_level * decay
+            self._flash[strip["id"]] = flash_level * decay
 
             bri = max(audio_bri, flash_bri)
-            segments.append({"id": seg["id"], "on": bri > 0, "bri": bri})
+            segments.append({"id": strip["id"], "on": bri > 0, "bri": bri})
         return {"seg": segments}
