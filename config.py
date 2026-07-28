@@ -19,6 +19,7 @@ BEHAVIOR_DEFAULTS = {
     "source": "audio",
     "audio_band": "all",
     "midi_channel": "all",
+    "midi_device": "all",
     "pulse_color": [255, 80, 0],
     "pulse_velocity": 150,
     "pulse_tail": 30,
@@ -81,6 +82,7 @@ def _migrate_legacy_segments(config):
             strip["source"] = old.get("source", BEHAVIOR_DEFAULTS["source"])
             strip["audio_band"] = old.get("audio_band", BEHAVIOR_DEFAULTS["audio_band"])
             strip["midi_channel"] = old.get("midi_channel", BEHAVIOR_DEFAULTS["midi_channel"])
+            strip["midi_device"] = BEHAVIOR_DEFAULTS["midi_device"]
             strip["pulse_color"] = list(global_color)
             strip["pulse_velocity"] = global_velocity
             strip["pulse_tail"] = global_tail
@@ -96,6 +98,19 @@ def _migrate_legacy_segments(config):
     config["strips"] = strips
 
 
+def _backfill_strip_defaults(config):
+    """Rellena en cada tira cualquier campo de BEHAVIOR_DEFAULTS que aun no
+    exista (p.ej. tras anadir un campo nuevo a un config.json ya migrado a
+    `strips`, como `midi_device`). Devuelve True si rellano algo."""
+    changed = False
+    for strip in config.get("strips", []):
+        for key, default in BEHAVIOR_DEFAULTS.items():
+            if key not in strip:
+                strip[key] = list(default) if isinstance(default, list) else default
+                changed = True
+    return changed
+
+
 def load_config(path="config.json"):
     try:
         with open(path) as f:
@@ -105,8 +120,9 @@ def load_config(path="config.json"):
 
     migrated = "strips" not in config
     _migrate_legacy_segments(config)
-    if migrated:
-        save_config(config, path)  # persiste el esquema nuevo de inmediato
+    backfilled = _backfill_strip_defaults(config)
+    if migrated or backfilled:
+        save_config(config, path)  # persiste el esquema actualizado de inmediato
     return config
 
 

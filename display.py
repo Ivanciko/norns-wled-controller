@@ -65,6 +65,7 @@ FIELD_LABELS = {
     "source": "Fuente",
     "audio_band": "Banda",
     "midi_channel": "Canal MIDI",
+    "midi_device": "Disp. MIDI",
     "color": "Color",
     "fx": "Efecto",
     "velocity": "Velocidad",
@@ -198,6 +199,7 @@ def _strip_fields(strip):
         fields.append("audio_band")
     if strip["source"] in ("midi", "both"):
         fields.append("midi_channel")
+        fields.append("midi_device")
     fields += ["color", "fx", "velocity"]
     if strip["fx"] == "reactive":
         fields.append("tail")
@@ -234,6 +236,9 @@ def _field_value_str(strip, key):
         return BAND_LABELS[strip["audio_band"]]
     if key == "midi_channel":
         return CHANNEL_LABELS[strip["midi_channel"]]
+    if key == "midi_device":
+        dev = strip.get("midi_device", "all")
+        return "todos" if dev == "all" else dev
     if key == "color":
         return COLOR_PALETTE[_palette_index(strip["pulse_color"])][0]
     if key == "fx":
@@ -261,6 +266,11 @@ def _adjust_field(strip, key, delta):
         strip["audio_band"] = cycle(BANDS, strip["audio_band"], delta)
     elif key == "midi_channel":
         strip["midi_channel"] = cycle(CHANNELS, strip["midi_channel"], delta)
+    elif key == "midi_device":
+        options = ["all"] + _midi.device_names
+        cur = strip.get("midi_device", "all")
+        cur_idx = options.index(cur) if cur in options else 0
+        strip["midi_device"] = options[(cur_idx + delta) % len(options)]
     elif key == "color":
         pidx = (_palette_index(strip["pulse_color"]) + delta) % len(COLOR_PALETTE)
         strip["pulse_color"] = list(COLOR_PALETTE[pidx][1])

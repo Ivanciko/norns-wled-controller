@@ -81,7 +81,7 @@ def on_levels(levels):
             _beat_armed[seg_id] = True
 
 
-def on_midi(msg):
+def on_midi(msg, device_name):
     if msg.type != "note_on" or msg.velocity <= 0:
         return
     ch = msg.channel + 1
@@ -90,6 +90,7 @@ def on_midi(msg):
         if strip.get("active", True) and strip["fx"] == "reactive"
         and strip["source"] in ("midi", "both")
         and (strip["midi_channel"] == "all" or strip["midi_channel"] == ch)
+        and (strip.get("midi_device", "all") in ("all", device_name))
     ]
     if not matching:
         return
