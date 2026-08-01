@@ -25,7 +25,14 @@ import time
 import requests
 
 _DRGB_TYPE = 2
+_DNRGB_TYPE = 4
 _DRGB_TIMEOUT = 2   # segundos que WLED espera antes de retomar su modo
+_MAX_CHUNK_LEDS = 480   # tope por paquete UDP para no superar la MTU (~1500B)
+                        # y evitar fragmentacion IP - con >490 LEDs en un solo
+                        # DRGB el paquete se fragmenta y el AP del ESP32 lo
+                        # descarta casi siempre (confirmado 2026-08-01: con
+                        # 550 LEDs activos el pulso dejaba de llegar salvo por
+                        # azar; con DNRGB en trozos de 480 llega siempre)
 _FPS_ACTIVE = 30    # fps mientras hay pulsos en movimiento
 _FPS_IDLE = 2       # fps cuando no hay pulsos (solo keepalive)
 _DEFAULT_VELOCITY = 150.0   # LEDs/segundo
@@ -314,7 +321,15 @@ class WLEDAnimator:
         if not self._output_enabled:
             return
         try:
-            self._udp.sendto(self._header + bytes(self._pixels), self._udp_addr)
+            if self._n_leds <= _MAX_CHUNK_LEDS:
+                self._udp.sendto(self._header + bytes(self._pixels), self._udp_addr)
+            else:
+                # DNRGB en trozos: un solo DRGB con >490 LEDs se fragmenta a
+                # nivel IP y el ESP32 en modo AP lo pierde casi siempre.
+                for start in range(0, self._n_leds, _MAX_CHUNK_LEDS):
+                    end = min(start + _MAX_CHUNK_LEDS, self._n_leds)
+                    chunk_header = bytes([_DNRGB_TYPE, _DRGB_TIMEOUT]) + start.to_bytes(2, "big")
+                    self._udp.sendto(chunk_header + bytes(self._pixels[start * 3:end * 3]), self._udp_addr)
         except OSError:
             # Red no disponible aun (arrancando) — el loop sigue vivo y
             # reintentara en el siguiente frame cuando la red este lista.

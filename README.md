@@ -63,13 +63,13 @@ The Pi can also connect to any other WiFi network (home router, etc.) from the S
 |---|---|
 | **TIRAS** | All strips at once: name, source letter, level bar; footer shows size/LED count/pin of the strip highlighted with E1. K3 opens that strip's detail |
 | **FUENTES** | E1 audio input gain, E2 output volume, E3 detection threshold |
-| **WLED/RED** | WLED host, pulse direction (reverse), presets/effects loaded count |
+| **WLED/RED** | WLED host, pulse direction (reverse) for strips 1 and 2, presets/effects loaded count |
 | **PRESETS** | E1 cycles WLED's own saved presets, applied instantly (whole device) |
 | **BRILLO** | E1 adjusts OLED screen contrast |
 
 ### Strip detail (from TIRAS, K3 on the highlighted strip)
 
-E2 moves the field cursor, E1/E3 adjust the active field's value. Fields (shown conditionally): Source (audio/midi/both) → Audio band → MIDI channel → Color (curated palette) → Effect (reactive pulse, or any native WLED effect) → Speed → Tail (reactive only) → Ambient brightness. K3 returns to TIRAS.
+E2 moves the field cursor, E1/E3 adjust the active field's value. Fields (shown conditionally): Active → Source (audio/midi/both) → Audio band → MIDI channel → MIDI device → Color (curated palette) → Effect (reactive pulse, or any native WLED effect) → Speed → Tail (reactive only) → **Reverse** (reactive only, strips 3 and 4 only — strips 1/2 use the WLED/RED page's global reverse) → Ambient brightness. K3 returns to TIRAS.
 
 ### Clean VU mode (K2 on any root page)
 

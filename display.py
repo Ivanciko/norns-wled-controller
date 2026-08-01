@@ -70,6 +70,7 @@ FIELD_LABELS = {
     "fx": "Efecto",
     "velocity": "Velocidad",
     "tail": "Cola",
+    "reverse": "Reversa",
     "bri_floor": "Brillo amb.",
 }
 
@@ -203,6 +204,8 @@ def _strip_fields(strip):
     fields += ["color", "fx", "velocity"]
     if strip["fx"] == "reactive":
         fields.append("tail")
+        if "pulse_reverse" in strip:  # solo Tira 3 y Tira 4 (ver cfg.REVERSIBLE_STRIP_IDS)
+            fields.append("reverse")
     fields.append("bri_floor")
     return fields
 
@@ -247,6 +250,8 @@ def _field_value_str(strip, key):
         return str(strip["pulse_velocity"]) if strip["fx"] == "reactive" else str(strip["fx_speed"])
     if key == "tail":
         return str(strip["pulse_tail"])
+    if key == "reverse":
+        return "si" if strip.get("pulse_reverse", True) else "no"
     if key == "bri_floor":
         return str(strip["bri_floor"])
     return ""
@@ -293,6 +298,8 @@ def _adjust_field(strip, key, delta):
                 _wled.set_segment_effect(idx, strip["fx"], strip["fx_speed"], strip["pulse_color"])
     elif key == "tail":
         strip["pulse_tail"] = int(_clamp_step(strip["pulse_tail"], delta, TAIL_STEP, TAIL_MIN, TAIL_MAX, 0))
+    elif key == "reverse":
+        strip["pulse_reverse"] = not strip.get("pulse_reverse", True)
     elif key == "bri_floor":
         strip["bri_floor"] = int(_clamp_step(strip["bri_floor"], delta, FLOOR_STEP, FLOOR_MIN, FLOOR_MAX, 0))
         if idx is not None:

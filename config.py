@@ -29,11 +29,20 @@ BEHAVIOR_DEFAULTS = {
     "active": True,
 }
 
+# Tira 3 y Tira 4 son las unicas con reverse propio (montadas de forma
+# independiente a 1/2, pueden necesitar direccion de pulso distinta). El
+# resto sigue usando el interruptor global `wled_pulse_reverse` (pagina
+# WLED/RED) - por eso este campo no vive en BEHAVIOR_DEFAULTS, que aplica
+# a las 4 tiras por igual.
+REVERSIBLE_STRIP_IDS = (2, 3)
+
 
 def _default_strip(i):
     strip = dict(HARDWARE_DEFAULTS[i])
     strip.update(BEHAVIOR_DEFAULTS)
     strip["pulse_color"] = list(BEHAVIOR_DEFAULTS["pulse_color"])
+    if strip["id"] in REVERSIBLE_STRIP_IDS:
+        strip["pulse_reverse"] = True
     return strip
 
 
@@ -108,6 +117,10 @@ def _backfill_strip_defaults(config):
             if key not in strip:
                 strip[key] = list(default) if isinstance(default, list) else default
                 changed = True
+        if strip["id"] in REVERSIBLE_STRIP_IDS and "pulse_reverse" not in strip:
+            # Arranca igual que el global de siempre, luego es independiente.
+            strip["pulse_reverse"] = config.get("wled_pulse_reverse", True)
+            changed = True
     return changed
 
 

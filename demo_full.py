@@ -67,7 +67,7 @@ def on_levels(levels):
 
     gain = config.get("audio_gain", 1.0)
     threshold = max(config.get("audio_threshold", 0.0), 0.05)
-    reverse = config.get("wled_pulse_reverse", True)
+    global_reverse = config.get("wled_pulse_reverse", True)
 
     audio_sync.send(levels, analyzer.band_centers, gain=gain, threshold=threshold)
 
@@ -83,7 +83,8 @@ def on_levels(levels):
             _beat_armed[seg_id] = False
             wled.trigger(
                 seg_ids=[idx], velocity=level, color=tuple(strip["pulse_color"]),
-                reverse=reverse, pulse_velocity=strip["pulse_velocity"], pulse_tail=strip["pulse_tail"],
+                reverse=strip.get("pulse_reverse", global_reverse),
+                pulse_velocity=strip["pulse_velocity"], pulse_tail=strip["pulse_tail"],
             )
         elif level < threshold * 0.55:
             _beat_armed[seg_id] = True
@@ -119,13 +120,14 @@ def on_midi(msg, device_name):
     ]
     if not matching:
         return
-    reverse = config.get("wled_pulse_reverse", True)
+    global_reverse = config.get("wled_pulse_reverse", True)
     router.flash(velocity=velocity, segments=[s["id"] for s in matching])
 
     for strip in matching:
         wled.trigger(
             seg_ids=[cfg.animator_index(config, strip["id"])], velocity=velocity, color=tuple(strip["pulse_color"]),
-            reverse=reverse, pulse_velocity=strip["pulse_velocity"], pulse_tail=strip["pulse_tail"],
+            reverse=strip.get("pulse_reverse", global_reverse),
+            pulse_velocity=strip["pulse_velocity"], pulse_tail=strip["pulse_tail"],
         )
 
 
