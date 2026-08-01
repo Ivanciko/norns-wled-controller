@@ -7,15 +7,16 @@ tiene microfono propio conectado, asi que sin esto "Audio Reactive" activado
 en WLED no recibe ninguna senal.
 
 Protocolo: struct "audioSyncPacket" v2 (44 bytes, packed) del usermod
-audioreactive, header "00002". Se manda por UDP *multicast* a 239.0.0.1,
-puerto 11988 por defecto - el contenido no necesita saber la IP de WLED,
-pero la interfaz de salida si: si la Pi tiene mas de una red activa (p.ej.
-wlan0 en la red del propio WLED-AP + eth0 con internet), el kernel puede
-mandar el multicast por la interfaz por defecto (la de internet) en vez de
-la que realmente llega a WLED, y el paquete se pierde en silencio. Por eso
-el constructor recibe `host` (el wled_host de config.json) solo para
-resolver, via el truco connect()+getsockname(), que interfaz local se usa
-para llegar a el, y fijar esa como interfaz multicast (IP_MULTICAST_IF).
+audioreactive, header "00002". Se manda por UDP **unicast** directo a
+`host`:11988 (no a 239.0.0.1 multicast, que probo ser poco fiable/roto en
+este setup: en modo WLED-AP el ESP32 hace de AP, y el multicast enviado
+desde una estacion hacia el propio AP no llegaba de forma fiable pese a que
+el socket local aceptaba el sendto() sin error - confirmado el 2026-08-01
+mandando el mismo paquete por unicast a 4.3.2.1:11988 y viendo a WLED
+validarlo al instante. El unicast ademas evita el bug de IP_MULTICAST_IF
+quedandose "pegado" a una interfaz invalida cuando la Pi tiene mas de una
+red activa a la vez (eth0 + wlan0) - aqui no hace falta fijar interfaz de
+salida, el kernel ya sabe por donde llegar a un host unicast conocido.
 
 Requiere, una vez, en la web de WLED > Config Audio Reactive > Sync: modo
 "Receive" (envia audioSyncEnabled=2 al JSON de esa pagina). Sin eso, WLED
@@ -30,7 +31,6 @@ import socket
 import struct
 import threading
 
-_MCAST_GRP = "239.0.0.1"
 _DEFAULT_PORT = 11988
 _HEADER = b"00002"
 _STRUCT_FMT = "<6s2sffBB16sHff"  # == sizeof(audioSyncPacket) == 44 bytes
@@ -46,33 +46,14 @@ class WLEDAudioSync:
     hilo de MIDI, y su golpe se combina (maximo) con el nivel de microfono
     en la siguiente llamada a send()."""
 
-    def __init__(self, host, port=_DEFAULT_PORT, ttl=1):
-        self._addr = (_MCAST_GRP, port)
+    def __init__(self, host, port=_DEFAULT_PORT):
+        self._addr = (host, port)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
-        self._bind_multicast_if(host)
         self.enabled = True
         self._armed = True
         self._lock = threading.Lock()
         self._midi_level = [0.0] * _NUM_BANDS
         self._midi_peak_frames = 0
-
-    def _bind_multicast_if(self, host):
-        """Fija la interfaz de salida del multicast a la que el kernel usa
-        para llegar a `host` (truco connect()+getsockname(), no manda nada
-        de verdad - solo resuelve la ruta). Sin esto, con mas de una red
-        activa en la Pi, el multicast puede salir por la interfaz
-        equivocada y WLED nunca recibe nada, en silencio."""
-        try:
-            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            probe.connect((host, 1))
-            local_ip = probe.getsockname()[0]
-            probe.close()
-            self._sock.setsockopt(
-                socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local_ip)
-            )
-        except OSError as e:
-            print(f"WLEDAudioSync: no se pudo fijar interfaz multicast para {host}: {e}")
 
     def note_on(self, velocity):
         """Llamar desde el hilo MIDI en cada nota que deba reflejarse en el
