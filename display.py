@@ -16,8 +16,12 @@ Pantallas (`screen`):
                    ajustan el valor del campo activo. K3 vuelve a TIRAS.
   "vu_clean"    -> 4 barras verticales, sin texto (modo actuacion en vivo).
                    K2 corto vuelve a "pages".
-  "sistema", "wifi_list", "wifi_kbd", "wifi_result" -> igual que antes
-                   (red/wifi/apagado), alcanzables con K1 mantenido.
+  "sistema"     -> solo estado de red (informativo) + apagado (K2
+                   mantenido), alcanzable con K1 mantenido. Sin escaneo ni
+                   conexion manual a otras redes - el Pi se conecta solo a
+                   [red WiFi de casa] (prioridad en NetworkManager), quitado a
+                   proposito para que no se pueda desconectar sin querer
+                   pidiendo una contrasena por error (2026-08-03).
 """
 import threading
 import time
@@ -26,7 +30,7 @@ from PIL import ImageFont
 
 import config as cfg
 import scenes as scn
-from system_control import connect_wifi, get_network_status, scan_wifi, shutdown
+from system_control import get_network_status, shutdown
 
 # ---------------------------------------------------------------------- #
 # Fuente compacta (antes: bitmap font por defecto de PIL)
@@ -109,14 +113,6 @@ DETAIL_VISIBLE_ROWS = 4
 # _adjust_field/_strip_fields).
 GLOBAL_FIELDS = ["velocity", "tail", "sparkle", "bri_floor"]
 
-KEYBOARD_CHARS = (
-    list("abcdefghijklmnopqrstuvwxyz")
-    + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    + list("0123456789")
-    + list(" -_.@!?#*/")
-)
-KBD_GROUPS = [0, 26, 52, 62]  # a-z, A-Z, 0-9, symbols
-
 LONG_PRESS_K1 = 1.2
 LONG_PRESS_K2 = 1.5
 LONG_PRESS_K3 = 1.5
@@ -159,12 +155,6 @@ scene_msg = ""          # feedback transitorio ("guardada"/"vacia"...)
 scene_msg_ts = 0.0
 
 network_status = {"iface": None, "ip": "", "ssid": None}
-wifi_networks = []
-wifi_index = 0
-wifi_password = ""
-kbd_char_index = 0
-wifi_connecting = False
-wifi_result_msg = ""
 
 key_press_ts = {1: None, 2: None, 3: None}
 key_long_fired = {1: False, 2: False, 3: False}
@@ -385,34 +375,11 @@ def _adjust_field(strip, key, delta):
 
 
 # ------------------------------------------------------------------ #
-# WiFi
-# ------------------------------------------------------------------ #
-
-def start_wifi_connect(ssid, password):
-    global screen, wifi_connecting, wifi_result_msg
-    wifi_connecting = True
-    wifi_result_msg = ""
-    screen = "wifi_result"
-
-    def on_done(ok, msg):
-        global wifi_connecting, wifi_result_msg
-        wifi_connecting = False
-        if ok:
-            wifi_result_msg = "conectado"
-            _config.setdefault("wifi_saved", {})[ssid] = password
-            _save_config(_config)
-        else:
-            wifi_result_msg = f"error: {msg[:30]}"
-
-    connect_wifi(ssid, password, on_done)
-
-
-# ------------------------------------------------------------------ #
 # Encoders
 # ------------------------------------------------------------------ #
 
 def on_encoder(n, delta):
-    global tira_cursor, detail_field_idx, preset_index, wifi_index, kbd_char_index
+    global tira_cursor, detail_field_idx, preset_index
     global global_field_idx, scene_index
     if not delta:
         return
@@ -475,16 +442,6 @@ def on_encoder(n, delta):
             detail_field_idx = (detail_field_idx + delta) % len(fields)
         elif n in (1, 3):
             _adjust_field(strip, fields[detail_field_idx], delta)
-    elif screen == "wifi_list":
-        if n == 1 and wifi_networks:
-            wifi_index = (wifi_index + delta) % len(wifi_networks)
-    elif screen == "wifi_kbd":
-        if n == 1:
-            kbd_char_index = (kbd_char_index + delta) % len(KEYBOARD_CHARS)
-        elif n == 2:
-            cur_group = max(i for i, s in enumerate(KBD_GROUPS) if s <= kbd_char_index)
-            next_group = (cur_group + delta) % len(KBD_GROUPS)
-            kbd_char_index = KBD_GROUPS[next_group]
 
 
 # ------------------------------------------------------------------ #
@@ -492,8 +449,7 @@ def on_encoder(n, delta):
 # ------------------------------------------------------------------ #
 
 def on_key(n, pressed):
-    global page, screen, tira_cursor, detail_strip_id, detail_field_idx
-    global wifi_networks, wifi_index, wifi_password, kbd_char_index, network_status
+    global page, screen, tira_cursor, detail_strip_id, detail_field_idx, network_status
 
     if pressed:
         key_press_ts[n] = time.monotonic()
@@ -527,39 +483,6 @@ def on_key(n, pressed):
     elif screen == "vu_clean":
         if n == 2:
             screen = "pages"
-    elif screen == "sistema":
-        if n == 3:
-            wifi_networks = scan_wifi()
-            wifi_index = 0
-            screen = "wifi_list"
-    elif screen == "wifi_list":
-        if n == 1 and wifi_networks:
-            net = wifi_networks[wifi_index]
-            saved = _config.get("wifi_saved", {})
-            if net["ssid"] in saved:
-                start_wifi_connect(net["ssid"], saved[net["ssid"]])
-            elif net["security"] in ("", "--"):
-                start_wifi_connect(net["ssid"], "")
-            else:
-                wifi_password = ""
-                kbd_char_index = 0
-                screen = "wifi_kbd"
-        elif n == 2:
-            wifi_networks = scan_wifi()
-            wifi_index = 0
-        elif n == 3:
-            screen = "sistema"
-    elif screen == "wifi_kbd":
-        if n == 1:
-            wifi_password += KEYBOARD_CHARS[kbd_char_index]
-        elif n == 2:
-            wifi_password = wifi_password[:-1]
-        elif n == 3:
-            net = wifi_networks[wifi_index]
-            start_wifi_connect(net["ssid"], wifi_password)
-    elif screen == "wifi_result":
-        screen = "sistema"
-        network_status = get_network_status()
 
 
 def tick():
@@ -627,12 +550,6 @@ def render(draw):
         _render_vu_clean(draw)
     elif screen == "sistema":
         _render_sistema(draw)
-    elif screen == "wifi_list":
-        _render_wifi_list(draw)
-    elif screen == "wifi_kbd":
-        _render_wifi_kbd(draw)
-    elif screen == "wifi_result":
-        _render_wifi_result(draw)
 
 
 def _render_pages(draw):
@@ -806,52 +723,8 @@ def _render_sistema(draw):
         label = network_status["ssid"] or network_status["iface"]
         _text(draw, 2, 16, label[:21])
         _text(draw, 2, 28, network_status["ip"] or "(sin ip)")
-    _text(draw, 2, 42, "K3: wifi   K1: volver")
+    _text(draw, 2, 42, "K1: volver")
     ratio = held_ratio(2, LONG_PRESS_K2)
     if ratio > 0:
         _text(draw, 2, 52, "apagando (manten K2)")
         draw.rectangle((2, 60, 2 + int(120 * ratio), 63), fill="white")
-
-
-def _render_wifi_list(draw):
-    _text(draw, 2, 1, "WIFI - redes")
-    if not wifi_networks:
-        _text(draw, 2, 20, "sin redes")
-        _text(draw, 2, 46, "K2:buscar K3:volver")
-    else:
-        net = wifi_networks[wifi_index]
-        saved = _config.get("wifi_saved", {})
-        known = net["ssid"] in saved
-        sec = "abierta" if net["security"] in ("", "--") else net["security"]
-        ssid_lbl = (net["ssid"][:19] + " *") if known else net["ssid"][:21]
-        _text(draw, 2, 16, ssid_lbl)
-        _text(draw, 2, 28, f"senal: {net['signal']}%  {sec}")
-        _text(draw, 2, 40, f"{wifi_index + 1}/{len(wifi_networks)}")
-        lbl = "K1:conn" if known else "K1:elegir"
-        _text(draw, 2, 52, f"{lbl} K2:scan K3<-")
-
-
-def _render_wifi_kbd(draw):
-    net = wifi_networks[wifi_index]
-    _text(draw, 2, 1, f"WIFI: {net['ssid'][:18]}")
-    _text(draw, 2, 13, f"{wifi_password[-20:]}_")
-    context = "".join(
-        f"[{KEYBOARD_CHARS[(kbd_char_index + o) % len(KEYBOARD_CHARS)]}]"
-        if o == 0 else
-        f" {KEYBOARD_CHARS[(kbd_char_index + o) % len(KEYBOARD_CHARS)]} "
-        for o in range(-3, 4)
-    )
-    _text(draw, 2, 27, context)
-    grp_names = ["a-z", "A-Z", "0-9", "!@#"]
-    cur_grp = max(i for i, s in enumerate(KBD_GROUPS) if s <= kbd_char_index)
-    _text(draw, 2, 42, f"E1:char  E2:{grp_names[cur_grp]}")
-    _text(draw, 2, 53, "K1:add K2:del K3:conn")
-
-
-def _render_wifi_result(draw):
-    _text(draw, 2, 1, "WIFI")
-    if wifi_connecting:
-        _text(draw, 2, 20, "conectando...")
-    else:
-        _text(draw, 2, 20, wifi_result_msg[:21])
-        _text(draw, 2, 40, "pulsa un boton")

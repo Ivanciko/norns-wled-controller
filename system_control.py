@@ -1,11 +1,16 @@
-"""system_control.py - estado de red, escaneo/conexion WiFi y apagado.
+"""system_control.py - estado de red y apagado.
 
 Requiere /etc/sudoers.d/wled-controller con NOPASSWD para poweroff y nmcli,
 ya que el proceso corre como systemd --user (sin sesion "activa" para
-polkit) y por tanto no puede apagar ni modificar conexiones sin sudo.
+polkit) y por tanto no puede apagar sin sudo (nmcli ya no hace falta aqui,
+pero se deja el NOPASSWD por si se vuelve a necesitar).
+
+Sin escaneo ni conexion manual a otras redes desde el propio dispositivo -
+quitado a proposito (2026-08-03): el Pi se conecta solo a la red domestica
+configurada por prioridad en NetworkManager (ver perfiles wled-ctrl-*), sin
+menu que pueda desconectarlo sin querer pidiendo una contrasena por error.
 """
 import subprocess
-import threading
 
 
 def _nmcli(*args, timeout=15):
@@ -35,69 +40,6 @@ def get_network_status():
                 break
         return {"iface": device, "ip": ip, "ssid": connection if dtype == "wifi" else None}
     return {"iface": None, "ip": "", "ssid": None}
-
-
-def scan_wifi():
-    """Lista de {"ssid","signal","security"}, sin duplicados, ordenada por señal."""
-    result = _nmcli(
-        "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "yes",
-        timeout=20,
-    )
-    seen = {}
-    for line in result.stdout.splitlines():
-        try:
-            ssid_part, signal_str, security = line.rsplit(":", 2)
-        except ValueError:
-            continue
-        ssid = ssid_part.replace("\\:", ":")
-        if not ssid:
-            continue
-        try:
-            signal = int(signal_str)
-        except ValueError:
-            signal = 0
-        if ssid not in seen or signal > seen[ssid]["signal"]:
-            seen[ssid] = {"ssid": ssid, "signal": signal, "security": security}
-    return sorted(seen.values(), key=lambda n: n["signal"], reverse=True)
-
-
-def connect_wifi(ssid, password, on_done):
-    """Conecta en segundo plano; on_done(ok, mensaje) se llama al terminar."""
-    con_name = f"wled-ctrl-{ssid}"
-
-    def run():
-        try:
-            # Borra perfil previo gestionado por el controlador para evitar conflictos
-            subprocess.run(
-                ["sudo", "nmcli", "connection", "delete", con_name],
-                capture_output=True, timeout=10,
-            )
-            # Crea perfil limpio
-            add_args = [
-                "sudo", "nmcli", "connection", "add",
-                "type", "wifi", "ifname", "wlan0",
-                "con-name", con_name, "ssid", ssid,
-                "ipv4.method", "auto",
-            ]
-            if password:
-                add_args += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]
-            r = subprocess.run(add_args, capture_output=True, text=True, timeout=15)
-            if r.returncode != 0:
-                on_done(False, r.stderr.strip() or "error al crear perfil")
-                return
-            result = subprocess.run(
-                ["sudo", "nmcli", "connection", "up", con_name],
-                capture_output=True, text=True, timeout=60,
-            )
-            ok = result.returncode == 0
-            msg = (result.stdout if ok else result.stderr).strip() or "error"
-        except subprocess.TimeoutExpired:
-            ok, msg = False, "timeout"
-        except Exception as exc:
-            ok, msg = False, str(exc)
-        on_done(ok, msg)
-
-    threading.Thread(target=run, daemon=True).start()
 
 
 def shutdown():
