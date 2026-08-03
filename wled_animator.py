@@ -18,6 +18,7 @@ tira y en su lugar corre un efecto WLED continuo sobre su segmento nativo
 (requiere que WLED tenga definidos Segments que coincidan con los rangos de
 cada tira, ademas de los Outputs fisicos).
 """
+import random
 import socket
 import threading
 import time
@@ -37,7 +38,10 @@ _FPS_ACTIVE = 30    # fps mientras hay pulsos en movimiento
 _FPS_IDLE = 2       # fps cuando no hay pulsos (solo keepalive)
 _DEFAULT_VELOCITY = 150.0   # LEDs/segundo
 _DEFAULT_TAIL = 30          # LEDs de cola
+_DEFAULT_SPARKLE = 0        # 0-255, ver trigger()/_paint() - 0 = sin chispas (igual que antes)
 _RETRY_DELAY = 10.0         # segundos entre reintentos de carga (presets/efectos)
+
+_SPARKLE_MAX_PROB = 0.12   # prob. por pixel y por frame con sparkle=255 - calibrar en hardware
 
 
 class WLEDAnimator:
@@ -61,6 +65,7 @@ class WLEDAnimator:
         self._seg_ambient = {}  # seg_id -> (bri_floor:int, color:tuple), ver set_segment_ambient
         self._pulse_velocity = _DEFAULT_VELOCITY
         self._pulse_tail = _DEFAULT_TAIL
+        self._pulse_sparkle = _DEFAULT_SPARKLE
         self._output_enabled = True
         self._brightness = 255       # brillo maestro WLED (0-255), ver propiedad brightness
         self._preset_data = {}       # datos completos de presets.json
@@ -131,6 +136,14 @@ class WLEDAnimator:
     @pulse_tail.setter
     def pulse_tail(self, value):
         self._pulse_tail = int(value)
+
+    @property
+    def pulse_sparkle(self):
+        return self._pulse_sparkle
+
+    @pulse_sparkle.setter
+    def pulse_sparkle(self, value):
+        self._pulse_sparkle = int(value)
 
     @property
     def brightness(self):
@@ -221,10 +234,10 @@ class WLEDAnimator:
     # ------------------------------------------------------------------ #
 
     def trigger(self, seg_ids=None, velocity=1.0, color=(255, 255, 255),
-                reverse=True, pulse_velocity=None, pulse_tail=None):
-        """Dispara un pulso DRGB reactivo. `pulse_velocity`/`pulse_tail`
-        sobrescriben, solo para este disparo, los valores por defecto de la
-        instancia (permite que cada tira tenga su propia velocidad/cola)."""
+                reverse=True, pulse_velocity=None, pulse_tail=None, pulse_sparkle=None):
+        """Dispara un pulso DRGB reactivo. `pulse_velocity`/`pulse_tail`/
+        `pulse_sparkle` sobrescriben, solo para este disparo, los valores por
+        defecto de la instancia (permite que cada tira tenga los suyos)."""
         if not self._output_enabled:
             return
         if seg_ids is None:
@@ -232,6 +245,7 @@ class WLEDAnimator:
 
         vel = self._pulse_velocity if pulse_velocity is None else float(pulse_velocity)
         tail = self._pulse_tail if pulse_tail is None else int(pulse_tail)
+        sparkle = self._pulse_sparkle if pulse_sparkle is None else int(pulse_sparkle)
 
         offset = 0
         with self._lock:
@@ -249,6 +263,7 @@ class WLEDAnimator:
                         "bri": float(min(1.0, max(0.2, velocity))),
                         "color": color,
                         "tail": tail,
+                        "sparkle": sparkle,
                         "reverse": reverse,
                     })
                 offset += size
@@ -298,6 +313,13 @@ class WLEDAnimator:
         start = p["start"]
         n = p["n"]
         rev = p["reverse"]
+        # Prob. de chispa por pixel, recalculada al azar cada frame - no se
+        # guarda en `p`, asi que una posicion que destella en este frame no
+        # deja estela propia: en el siguiente vuelve a valer solo el fade
+        # normal (o vuelve a tener suerte). Con sparkle=0 esto es 0 y el
+        # bucle de abajo es identico byte a byte al comportamiento de antes
+        # (ni siquiera se llama a random).
+        sparkle_prob = (p["sparkle"] / 255.0) * _SPARKLE_MAX_PROB
 
         i_from = max(0, int(head - tail) - 1)
         i_to = min(n - 1, int(head) + 1)
@@ -306,13 +328,21 @@ class WLEDAnimator:
             dist = head - i
             if dist < 0 or dist > tail:
                 continue
-            fade = (1.0 - dist / tail) ** 1.5
-            intensity = bri * fade
+            if sparkle_prob and random.random() < sparkle_prob:
+                # Chispa: color propio de la tira a brillo pleno (como la
+                # cabeza del pulso), no atenuado por el fade de esta
+                # posicion - destello que corta la cola.
+                vr = int(r0 * bri)
+                vg = int(g0 * bri)
+                vb = int(b0 * bri)
+            else:
+                fade = (1.0 - dist / tail) ** 1.5
+                intensity = bri * fade
+                vr = int(r0 * intensity)
+                vg = int(g0 * intensity)
+                vb = int(b0 * intensity)
             phys = (n - 1 - i) if rev else i
             idx = (start + phys) * 3
-            vr = int(r0 * intensity)
-            vg = int(g0 * intensity)
-            vb = int(b0 * intensity)
             if vr > self._pixels[idx]:     self._pixels[idx]     = vr
             if vg > self._pixels[idx + 1]: self._pixels[idx + 1] = vg
             if vb > self._pixels[idx + 2]: self._pixels[idx + 2] = vb

@@ -85,6 +85,7 @@ def on_levels(levels):
                 seg_ids=[idx], velocity=level, color=tuple(strip["pulse_color"]),
                 reverse=strip.get("pulse_reverse", global_reverse),
                 pulse_velocity=strip["pulse_velocity"], pulse_tail=strip["pulse_tail"],
+                pulse_sparkle=strip.get("sparkle", 0),
             )
         elif level < threshold * 0.55:
             _beat_armed[seg_id] = True
@@ -128,6 +129,7 @@ def on_midi(msg, device_name):
             seg_ids=[cfg.animator_index(config, strip["id"])], velocity=velocity, color=tuple(strip["pulse_color"]),
             reverse=strip.get("pulse_reverse", global_reverse),
             pulse_velocity=strip["pulse_velocity"], pulse_tail=strip["pulse_tail"],
+            pulse_sparkle=strip.get("sparkle", 0),
         )
 
 

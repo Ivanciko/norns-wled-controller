@@ -6,10 +6,12 @@ on_encoder(n, delta), on_key(n, pressed), render(draw) (dentro de un
 `with canvas(device) as draw:`) y tick() (cada frame, para los long-press).
 
 Pantallas (`screen`):
-  "pages"       -> 5 paginas raiz (K1 corto cicla): TIRAS/FUENTES/WLED-RED/
-                   PRESETS/BRILLO. K3 corto = toggle salida WLED, salvo en
-                   TIRAS donde K3 corto entra al detalle de la tira resaltada
-                   (con E1). K2 corto = modo VU limpio.
+  "pages"       -> 7 paginas raiz (K1 corto cicla): TIRAS/FUENTES/WLED-RED/
+                   PRESETS/BRILLO/GLOBAL/ESCENAS. K3 corto = toggle salida
+                   WLED, salvo en TIRAS (K3 corto entra al detalle de la
+                   tira resaltada con E1) y en ESCENAS (K3 corto aplica la
+                   escena resaltada con E1, K3 mantenido la guarda). K2
+                   corto = modo VU limpio.
   "tira_detail" -> campos de una tira: E2 mueve el cursor de campo, E1/E3
                    ajustan el valor del campo activo. K3 vuelve a TIRAS.
   "vu_clean"    -> 4 barras verticales, sin texto (modo actuacion en vivo).
@@ -23,6 +25,7 @@ import time
 from PIL import ImageFont
 
 import config as cfg
+import scenes as scn
 from system_control import connect_wifi, get_network_status, scan_wifi, shutdown
 
 # ---------------------------------------------------------------------- #
@@ -71,6 +74,7 @@ FIELD_LABELS = {
     "fx": "Efecto",
     "velocity": "Velocidad",
     "tail": "Cola",
+    "sparkle": "Sparkle",
     "reverse": "Reversa",
     "bri_floor": "Brillo amb.",
 }
@@ -85,6 +89,8 @@ VEL_STEP = 10
 VEL_MIN, VEL_MAX = 20, 600
 TAIL_STEP = 5
 TAIL_MIN, TAIL_MAX = 5, 150
+SPARKLE_STEP = 5
+SPARKLE_MIN, SPARKLE_MAX = 0, 255
 FLOOR_STEP = 5
 FLOOR_MIN, FLOOR_MAX = 0, 200
 FX_SPEED_STEP = 5
@@ -94,8 +100,14 @@ CONTRAST_MIN, CONTRAST_MAX = 0, 255
 BRIGHTNESS_STEP = 5
 BRIGHTNESS_MIN, BRIGHTNESS_MAX = 0, 255
 
-ROOT_PAGES = ["TIRAS", "FUENTES", "WLED/RED", "PRESETS", "BRILLO"]
+ROOT_PAGES = ["TIRAS", "FUENTES", "WLED/RED", "PRESETS", "BRILLO", "GLOBAL", "ESCENAS"]
 DETAIL_VISIBLE_ROWS = 4
+
+# Campos que la pagina GLOBAL ajusta de forma relativa (+delta*step) en las
+# 4 tiras a la vez. "bri_floor" aplica siempre; velocity/tail/sparkle solo
+# a tiras en modo "reactive" (en modo native effect no tienen sentido - ver
+# _adjust_field/_strip_fields).
+GLOBAL_FIELDS = ["velocity", "tail", "sparkle", "bri_floor"]
 
 KEYBOARD_CHARS = (
     list("abcdefghijklmnopqrstuvwxyz")
@@ -139,6 +151,12 @@ tira_cursor = 0        # fila resaltada en la pagina TIRAS
 detail_strip_id = 0    # tira en edicion en tira_detail
 detail_field_idx = 0   # cursor de campo en tira_detail
 preset_index = 0        # cursor en la pagina PRESETS
+global_field_idx = 0    # cursor de campo en la pagina GLOBAL
+
+scenes = []             # lista de N_SCENES snapshots (o None), ver init()
+scene_index = 0         # escena resaltada en la pagina ESCENAS
+scene_msg = ""          # feedback transitorio ("guardada"/"vacia"...)
+scene_msg_ts = 0.0
 
 network_status = {"iface": None, "ip": "", "ssid": None}
 wifi_networks = []
@@ -161,7 +179,7 @@ _save_lock = threading.Lock()
 
 def init(device, config, wled, router, midi, analyzer, save_config):
     global _device, _config, _wled, _router, _midi, _analyzer, _save_config
-    global seg_state, preset_index
+    global seg_state, preset_index, scenes
     _device, _config, _wled, _router = device, config, wled, router
     _midi, _analyzer, _save_config = midi, analyzer, save_config
 
@@ -171,13 +189,37 @@ def init(device, config, wled, router, midi, analyzer, save_config):
     saved = config.get("wled_preset", 1)
     preset_index = next((i for i, (pid, _) in enumerate(preset_list) if pid == saved), 0)
 
-    for strip in config["strips"]:
+    scenes = scn.load_scenes()
+
+    _sync_all_strips_to_wled()
+
+
+def _sync_all_strips_to_wled():
+    """Empuja a WLED el ambiente/efecto nativo de cada tira activa segun el
+    `_config` actual. Llamado al arrancar y tras aplicar una escena (que
+    cambia varios campos de golpe sin pasar por _adjust_field)."""
+    for strip in _config["strips"]:
         if not strip.get("active", True):
             continue
-        idx = cfg.animator_index(config, strip["id"])
-        wled.set_segment_ambient(idx, strip["bri_floor"], strip["pulse_color"])
+        idx = cfg.animator_index(_config, strip["id"])
+        _wled.set_segment_ambient(idx, strip["bri_floor"], strip["pulse_color"])
         if strip["fx"] != "reactive":
-            wled.set_segment_effect(idx, strip["fx"], strip.get("fx_speed"), strip["pulse_color"])
+            _wled.set_segment_effect(idx, strip["fx"], strip.get("fx_speed"), strip["pulse_color"])
+
+
+def _apply_scene_and_sync(index):
+    """Aplica la escena `index` sobre _config (in place) y dispara los mismos
+    efectos secundarios que _adjust_field hace campo a campo (ambiente/efecto
+    nativo por tira), ademas de guardar el nuevo estado a disco."""
+    global scene_msg, scene_msg_ts
+    ok = scn.apply_scene(scenes, index, _config)
+    scene_msg_ts = time.monotonic()
+    if ok:
+        _sync_all_strips_to_wled()
+        _save_config(_config)
+        scene_msg = "aplicada"
+    else:
+        scene_msg = "(vacia)"
 
 
 def _debounced_save():
@@ -234,6 +276,7 @@ def _strip_fields(strip):
     fields += ["color", "fx", "velocity"]
     if strip["fx"] == "reactive":
         fields.append("tail")
+        fields.append("sparkle")
         if "pulse_reverse" in strip:  # solo Tira 3 y Tira 4 (ver cfg.REVERSIBLE_STRIP_IDS)
             fields.append("reverse")
     fields.append("bri_floor")
@@ -280,6 +323,8 @@ def _field_value_str(strip, key):
         return str(strip["pulse_velocity"]) if strip["fx"] == "reactive" else str(strip["fx_speed"])
     if key == "tail":
         return str(strip["pulse_tail"])
+    if key == "sparkle":
+        return str(strip.get("sparkle", 0))
     if key == "reverse":
         return "si" if strip.get("pulse_reverse", True) else "no"
     if key == "bri_floor":
@@ -328,6 +373,8 @@ def _adjust_field(strip, key, delta):
                 _wled.set_segment_effect(idx, strip["fx"], strip["fx_speed"], strip["pulse_color"])
     elif key == "tail":
         strip["pulse_tail"] = int(_clamp_step(strip["pulse_tail"], delta, TAIL_STEP, TAIL_MIN, TAIL_MAX, 0))
+    elif key == "sparkle":
+        strip["sparkle"] = int(_clamp_step(strip.get("sparkle", 0), delta, SPARKLE_STEP, SPARKLE_MIN, SPARKLE_MAX, 0))
     elif key == "reverse":
         strip["pulse_reverse"] = not strip.get("pulse_reverse", True)
     elif key == "bri_floor":
@@ -366,6 +413,7 @@ def start_wifi_connect(ssid, password):
 
 def on_encoder(n, delta):
     global tira_cursor, detail_field_idx, preset_index, wifi_index, kbd_char_index
+    global global_field_idx, scene_index
     if not delta:
         return
 
@@ -407,6 +455,18 @@ def on_encoder(n, delta):
                 _config["oled_contrast"] = c
                 _device.contrast(c)
                 _debounced_save()
+        elif page == 5:  # GLOBAL
+            if n == 2:
+                global_field_idx = (global_field_idx + delta) % len(GLOBAL_FIELDS)
+            elif n in (1, 3):
+                key = GLOBAL_FIELDS[global_field_idx]
+                for strip in _config["strips"]:
+                    if key != "bri_floor" and strip["fx"] != "reactive":
+                        continue  # velocity/tail/sparkle no aplican en modo native effect
+                    _adjust_field(strip, key, delta)
+        elif page == 6:  # ESCENAS
+            if n == 1:
+                scene_index = (scene_index + delta) % scn.N_SCENES
     elif screen == "tira_detail":
         strip = _strips_by_id()[detail_strip_id]
         fields = _strip_fields(strip)
@@ -455,6 +515,8 @@ def on_key(n, pressed):
                 detail_strip_id = _sorted_strips()[tira_cursor]["id"]
                 detail_field_idx = 0
                 screen = "tira_detail"
+            elif page == 6:
+                _apply_scene_and_sync(scene_index)
             else:
                 _wled.output_enabled = not _wled.output_enabled
                 _config["wled_output_enabled"] = _wled.output_enabled
@@ -502,8 +564,16 @@ def on_key(n, pressed):
 
 def tick():
     """Chequeo de long-press; llamar una vez por frame desde el main loop."""
-    global screen, page, prev_page, network_status
+    global screen, page, prev_page, network_status, scene_msg, scene_msg_ts
     now = time.monotonic()
+
+    if (screen == "pages" and page == 6
+            and key_press_ts[3] is not None and not key_long_fired[3]):
+        if now - key_press_ts[3] >= LONG_PRESS_K3:
+            key_long_fired[3] = True
+            scn.save_scene(scenes, scene_index, _config)
+            scene_msg = "guardada"
+            scene_msg_ts = now
 
     if key_press_ts[1] is not None and not key_long_fired[1]:
         if now - key_press_ts[1] >= LONG_PRESS_K1:
@@ -576,6 +646,10 @@ def _render_pages(draw):
         _render_presets(draw)
     elif page == 4:
         _render_brillo(draw)
+    elif page == 5:
+        _render_global(draw)
+    elif page == 6:
+        _render_escenas(draw)
 
 
 def _render_tiras(draw):
@@ -660,6 +734,31 @@ def _render_brillo(draw):
     fill_w = int(bar_w * c / CONTRAST_MAX)
     if fill_w > 0:
         draw.rectangle((2, bar_y2, 2 + fill_w, bar_y2 + 6), fill="white")
+
+
+def _render_global(draw):
+    key = GLOBAL_FIELDS[global_field_idx]
+    _header(draw, "GLOBAL", FIELD_LABELS[key])
+    for i, strip in enumerate(_sorted_strips()):
+        y = LINE_H * (i + 1)
+        if key != "bri_floor" and strip["fx"] != "reactive":
+            val = "(native)"
+        else:
+            val = _field_value_str(strip, key)
+        _text(draw, 2, y, f"T{strip['id'] + 1}: {val}")
+    _text(draw, 2, LINE_H * 5, "E2:campo E1/E3:+/- (rel.)")
+
+
+def _render_escenas(draw):
+    _header(draw, "ESCENAS")
+    name = scn.SCENE_NAMES[scene_index]
+    estado = "vacia" if scenes[scene_index] is None else "guardada"
+    _text(draw, 2, LINE_H, name)
+    _text(draw, 2, LINE_H * 2, f"[{scene_index + 1}/{scn.N_SCENES}]  {estado}")
+    if scene_msg and time.monotonic() - scene_msg_ts < 1.5:
+        _text(draw, 2, LINE_H * 3, scene_msg)
+    _text(draw, 2, LINE_H * 4, "E1: elegir")
+    _text(draw, 2, LINE_H * 5, "K3: aplicar  K3 manten: guardar")
 
 
 def _render_tira_detail(draw):

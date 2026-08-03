@@ -23,6 +23,7 @@ BEHAVIOR_DEFAULTS = {
     "pulse_color": [255, 80, 0],
     "pulse_velocity": 150,
     "pulse_tail": 30,
+    "sparkle": 0,
     "fx": "reactive",
     "fx_speed": 128,
     "bri_floor": 0,
@@ -166,3 +167,33 @@ def strip_led_counts(config):
     """Tamanos (num_leds) de las tiras activas en orden de id, para construir
     WLEDAnimator (reemplaza el antiguo wled_seg_sizes, ahora derivado)."""
     return [s["num_leds"] for s in active_strips(config)]
+
+
+def strips_snapshot(config):
+    """Snapshot de comportamiento (no hardware) de las 4 tiras, indexado por
+    id de tira - usado por scenes.py para guardar una escena. Solo incluye
+    los campos de BEHAVIOR_DEFAULTS (mas `pulse_reverse` si la tira lo
+    tiene), nunca name/length_m/num_leds/pin (eso es hardware, no cambia
+    entre escenas)."""
+    snapshot = {}
+    for strip in config["strips"]:
+        entry = {key: strip[key] for key in BEHAVIOR_DEFAULTS if key in strip}
+        if "pulse_reverse" in strip:
+            entry["pulse_reverse"] = strip["pulse_reverse"]
+        if "pulse_color" in entry:
+            entry["pulse_color"] = list(entry["pulse_color"])
+        snapshot[strip["id"]] = entry
+    return snapshot
+
+
+def apply_strips_snapshot(config, snapshot):
+    """Aplica un snapshot (de strips_snapshot) sobre config["strips"], in
+    place. Las claves de `snapshot` pueden venir como str (tras un ciclo por
+    JSON) o int. Tiras cuyo id no aparece en el snapshot no se tocan."""
+    by_id = {s["id"]: s for s in config["strips"]}
+    for sid, entry in snapshot.items():
+        strip = by_id.get(int(sid))
+        if strip is None:
+            continue
+        for key, value in entry.items():
+            strip[key] = list(value) if isinstance(value, list) else value
