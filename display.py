@@ -17,6 +17,7 @@ Pantallas (`screen`):
   "sistema", "wifi_list", "wifi_kbd", "wifi_result" -> igual que antes
                    (red/wifi/apagado), alcanzables con K1 mantenido.
 """
+import threading
 import time
 
 from PIL import ImageFont
@@ -150,6 +151,13 @@ wifi_result_msg = ""
 key_press_ts = {1: None, 2: None, 3: None}
 key_long_fired = {1: False, 2: False, 3: False}
 
+# Guardado con debounce: girar un encoder dispara muchos cambios seguidos:
+# agrupamos en una sola escritura a disco tras SAVE_DEBOUNCE_S sin cambios
+# nuevos, en vez de escribir en cada tick. Reduce desgaste de la SD.
+SAVE_DEBOUNCE_S = 0.7
+_save_timer = None
+_save_lock = threading.Lock()
+
 
 def init(device, config, wled, router, midi, analyzer, save_config):
     global _device, _config, _wled, _router, _midi, _analyzer, _save_config
@@ -170,6 +178,28 @@ def init(device, config, wled, router, midi, analyzer, save_config):
         wled.set_segment_ambient(idx, strip["bri_floor"], strip["pulse_color"])
         if strip["fx"] != "reactive":
             wled.set_segment_effect(idx, strip["fx"], strip.get("fx_speed"), strip["pulse_color"])
+
+
+def _debounced_save():
+    """Programa una escritura de config.json tras SAVE_DEBOUNCE_S de
+    inactividad, cancelando cualquier escritura pendiente anterior."""
+    global _save_timer
+    with _save_lock:
+        if _save_timer is not None:
+            _save_timer.cancel()
+        _save_timer = threading.Timer(SAVE_DEBOUNCE_S, flush_pending_save)
+        _save_timer.daemon = True
+        _save_timer.start()
+
+
+def flush_pending_save():
+    """Escribe ya cualquier cambio pendiente. Llamar antes de apagar/salir
+    para no perder el ultimo ajuste hecho justo antes de un guardado con
+    debounce todavia no disparado."""
+    global _save_timer
+    with _save_lock:
+        _save_timer = None
+    _save_config(_config)
 
 
 def held_ratio(n, threshold):
@@ -304,7 +334,7 @@ def _adjust_field(strip, key, delta):
         strip["bri_floor"] = int(_clamp_step(strip["bri_floor"], delta, FLOOR_STEP, FLOOR_MIN, FLOOR_MAX, 0))
         if idx is not None:
             _wled.set_segment_ambient(idx, strip["bri_floor"], strip["pulse_color"])
-    _save_config(_config)
+    _debounced_save()
 
 
 # ------------------------------------------------------------------ #
@@ -353,30 +383,30 @@ def on_encoder(n, delta):
                 _config["audio_threshold"] = _clamp_step(_config.get("audio_threshold", 0.0), delta, THRESHOLD_STEP, THRESHOLD_MIN, THRESHOLD_MAX)
             else:
                 return
-            _save_config(_config)
+            _debounced_save()
         elif page == 2:  # WLED/RED
             if n == 1:
                 _config["wled_pulse_reverse"] = not _config.get("wled_pulse_reverse", True)
-                _save_config(_config)
+                _debounced_save()
         elif page == 3:  # PRESETS
             preset_list = sorted(_wled.presets.items())
             if n == 1 and preset_list:
                 preset_index = (preset_index + delta) % len(preset_list)
                 pid, _ = preset_list[preset_index]
                 _config["wled_preset"] = pid
-                _save_config(_config)
+                _debounced_save()
                 _wled.apply_preset(pid)
         elif page == 4:  # BRILLO
             if n == 1:
                 b = int(_clamp_step(_config.get("wled_brightness", 255), delta, BRIGHTNESS_STEP, BRIGHTNESS_MIN, BRIGHTNESS_MAX, 0))
                 _config["wled_brightness"] = b
                 _wled.brightness = b
-                _save_config(_config)
+                _debounced_save()
             elif n == 2:
                 c = int(_clamp_step(_config.get("oled_contrast", 127), delta, CONTRAST_STEP, CONTRAST_MIN, CONTRAST_MAX, 0))
                 _config["oled_contrast"] = c
                 _device.contrast(c)
-                _save_config(_config)
+                _debounced_save()
     elif screen == "tira_detail":
         strip = _strips_by_id()[detail_strip_id]
         fields = _strip_fields(strip)
@@ -489,6 +519,7 @@ def tick():
     if screen == "sistema" and key_press_ts[2] is not None and not key_long_fired[2]:
         if now - key_press_ts[2] >= LONG_PRESS_K2:
             key_long_fired[2] = True
+            flush_pending_save()
             shutdown()
 
 

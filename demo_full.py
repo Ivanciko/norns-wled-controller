@@ -141,15 +141,25 @@ display.init(device, config, wled, router, midi, analyzer, cfg.save_config)
 
 print("Demo control 4 tiras. K1 cambia de pagina (mantener = sistema), K2 = modo VU limpio. Ctrl+C para salir.")
 
+# Pantalla de texto/barras: ~20fps ya se ve fluida a simple vista, sin gastar
+# CPU de mas redibujando mas rapido de lo que el ojo distingue. Los
+# encoders/botones no dependen de este bucle (Controls tiene su propio hilo
+# de polling de alta frecuencia), asi que bajar el fps de aqui no afecta a
+# la capacidad de respuesta de los controles.
+OLED_FRAME_S = 1.0 / 20
+
 try:
     while True:
+        frame_start = time.monotonic()
         display.tick()
         with canvas(device) as draw:
             display.render(draw)
-        time.sleep(0.02)
+        elapsed = time.monotonic() - frame_start
+        time.sleep(max(0.0, OLED_FRAME_S - elapsed))
 except KeyboardInterrupt:
     pass
 finally:
+    display.flush_pending_save()
     midi.close()
     controls.close()
     analyzer.close()
