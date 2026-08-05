@@ -1,5 +1,7 @@
 # audio-midi-reactive-wled-controller
 
+Built by **1V4N** — *Cables i Tramuntana*
+
 Audio and MIDI reactive LED controller built on a **Raspberry Pi 4** with a **monome norns shield**, controlling up to **4 WS2812B LED strips** via **WLED** (tested with a GLEDOPTO 4-channel Ethernet controller).
 
 The system runs fully autonomous — no computer needed. Boot the Pi and everything starts automatically: audio analysis, MIDI detection, WLED connection, and OLED menu.
