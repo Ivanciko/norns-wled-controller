@@ -36,9 +36,12 @@ To check your revision, look at the PCB silkscreen on the back of the norns shie
 
 ## Networking
 
-By default the Pi connects to the WiFi network created by the WLED ESP32 controller itself (**WLED-AP**, password `wled1234`). This is the standard WLED access point that every ESP32 running WLED creates out of the box — no router needed. Both devices talk directly to each other over this network, with the WLED ESP32 at `4.3.2.1`.
+Two supported setups:
 
-The Pi can also connect to any other WiFi network (home router, etc.) from the SISTEMA menu. Saved networks reconnect automatically on boot without entering the password again.
+- **WLED's own access point (default, no router needed)**: the Pi connects to the WiFi network created by the WLED ESP32/Ethernet controller itself (**WLED-AP**, password `wled1234`), with the controller at `4.3.2.1`. This AP is set to always broadcast (`ap.behav = 2` in WLED's WiFi settings) so it stays reachable even when the controller also has an active Ethernet link — useful for reaching the WLED web UI from a phone without disconnecting anything.
+- **Direct Ethernet link (lower jitter)**: on setups with an Ethernet-capable WLED controller (e.g. GLEDOPTO 4D-EXMU), the Pi's `eth0` can be wired point-to-point to the controller on its own subnet (`192.168.10.0/24`, Pi at `.1`, WLED at `.2`, static — no DHCP server needed), while `wlan0` stays on the normal home WiFi for SSH/internet. This removes WiFi jitter from the realtime pixel stream. Note: some WLED versions won't bring up a static-IP Ethernet link on a router-less point-to-point segment unless the **Static gateway** field is set to the Pi's own IP (not `0.0.0.0`) — a known WLED quirk, not a config mistake.
+
+The Pi does **not** offer a WiFi scan/connect menu on its own OLED (removed — see below); it always auto-connects via NetworkManager profiles configured ahead of time, with a priority order (e.g. home WiFi first, `WLED-AP` as fallback).
 
 ---
 
@@ -46,16 +49,16 @@ The Pi can also connect to any other WiFi network (home router, etc.) from the S
 
 - **Audio reactive**: analyses the audio input in real time (16-band FFT) and fires light pulses on every beat/onset, per strip
 - **MIDI reactive**: a `note_on` message from any connected USB-MIDI device fires a pulse on the strips listening on that channel
-- **Per-strip effect**: each strip independently runs either the reactive DRGB pulse, or a continuous native WLED effect (see Effects below)
+- **Per-strip effect**: each strip independently runs the reactive DRGB pulse, the triggered Meteor look, or a continuous native WLED effect (see Effects below)
 - **Autonomous boot**: runs as a systemd user service, starts on power-on with no interaction needed
 - **MIDI hot-plug**: if the MIDI device is not connected at boot, the system polls every 3 seconds and connects automatically when it appears
-- **WiFi management**: connect to saved networks or new networks from the OLED menu, no keyboard needed
+- **WiFi**: connects automatically on boot via pre-configured NetworkManager profiles (priority order, e.g. home WiFi then `WLED-AP` fallback) — no scan/connect menu on the device itself (see Networking)
 
 ---
 
 ## OLED Menu
 
-**K1 short** cycles through the 5 root pages. **K1 hold (~1.2s)** enters the SISTEMA screen (from anywhere, back with K1 hold again). **K2 short** (root pages only) toggles the clean VU-only performance view. **K3 short** toggles WLED output ON/OFF, except on the TIRAS page where K3 enters the selected strip's detail screen.
+**K1 short** cycles through the 7 root pages. **K1 hold (~1.2s)** enters the SISTEMA screen (from anywhere, back with K1 hold again). **K2 short** (root pages only) toggles the clean VU-only performance view. **K3 short** toggles WLED output ON/OFF, except on the TIRAS page (K3 enters the highlighted strip's detail) and the ESCENAS page (K3 short applies the highlighted scene, K3 held saves it).
 
 ### Root pages
 
@@ -65,11 +68,13 @@ The Pi can also connect to any other WiFi network (home router, etc.) from the S
 | **FUENTES** | E1 audio input gain, E2 output volume, E3 detection threshold |
 | **WLED/RED** | WLED host, pulse direction (reverse) for strips 1 and 2, presets/effects loaded count |
 | **PRESETS** | E1 cycles WLED's own saved presets, applied instantly (whole device) |
-| **BRILLO** | E1 adjusts OLED screen contrast |
+| **BRILLO** | E1 strip master brightness (WLED), E2 OLED screen contrast |
+| **GLOBAL** | Adjusts Speed/Tail/Sparkle/Ambient brightness on all 4 strips at once, relative to their current values (keeps the balance between strips) — E2 picks the field, E1/E3 apply the delta |
+| **ESCENAS** | 8 fixed-name snapshot slots capturing every strip's full behavior (source, color, effect, speed, etc.) — E1 picks a slot, K3 applies it, K3 held overwrites it |
 
 ### Strip detail (from TIRAS, K3 on the highlighted strip)
 
-E2 moves the field cursor, E1/E3 adjust the active field's value. Fields (shown conditionally): Active → Source (audio/midi/both) → Audio band → MIDI channel → MIDI device → Color (curated palette) → Effect (reactive pulse, or any native WLED effect) → Speed → Tail (reactive only) → **Reverse** (reactive only, strips 3 and 4 only — strips 1/2 use the WLED/RED page's global reverse) → Ambient brightness. K3 returns to TIRAS.
+E2 moves the field cursor, E1/E3 adjust the active field's value. Fields (shown conditionally): Active → Source (audio/midi/both) → Audio band → MIDI channel → MIDI device → Color (curated palette) → **Effect** → then fields specific to the chosen Effect (see below) → Ambient brightness. K3 returns to TIRAS.
 
 ### Clean VU mode (K2 on any root page)
 
@@ -77,14 +82,12 @@ Four large vertical level bars, no text — meant for live performance. K2 again
 
 ### SISTEMA screen (K1 hold)
 
-Shows current WiFi network and IP address.
+Read-only network status (current WiFi/Ethernet interface, IP) plus safe shutdown. No WiFi scan/connect menu here — see Networking for why.
 
 | Control | Action |
 |---|---|
-| K2 short | Edit WLED IP address (octet editor) |
 | K2 hold (~1.5s) | Safe shutdown |
-| K3 short | Scan and connect to WiFi networks |
-| K3 hold | Toggle AP mode (Pi creates "LightReactive" hotspot) |
+| K1 hold | Back to the root pages |
 
 ---
 
@@ -92,10 +95,11 @@ Shows current WiFi network and IP address.
 
 Each strip's **Effect** field (strip detail screen) picks between:
 
-- **Reactive pulse (default)**: the Pi calculates pixel data for each pulse — position, tail, fade curve — and streams it to WLED at 30fps via UDP (DRGB protocol). Speed and Tail control the pulse shape; multiple simultaneous pulses coexist using max blending (not additive).
-- **Any native WLED effect**: the strip runs that WLED effect continuously on its own WLED Segment (`fx`/`sx`/`col` via the JSON API) — the Pi does not drive it beat-by-beat. Requires WLED to have a Segment defined matching that strip's LED range (see Installation).
+- **Reactive pulse (default)**: the Pi calculates pixel data for each pulse — position, tail, fade curve, optional random "sparkle" flicker — and streams it to WLED at 30fps via UDP (DRGB protocol). Speed and Tail control the pulse shape; multiple simultaneous pulses coexist using max blending (not additive).
+- **Meteor disparado (Meteor triggered)**: same DRGB pulse pipeline, but rendered with a faithful port of WLED's own `mode_meteor()` effect — a per-pixel trail with randomized decay and a sweeping head, colored either as a rainbow-by-position gradient or the strip's own color. A new meteor is born on every trigger (note/onset), travels, and fades out — unlike WLED's native Meteor effect, which loops forever and can't be restarted on demand (WLED only resets an effect's internal state when its `fx` value actually changes, and the non-"Smooth" Meteor variant doesn't use that internal state for its position anyway — driving it via the native WLED effect API was tried and doesn't work, see commit history). Speed and Tail (here: trail decay length) are adjustable the same way as the reactive pulse.
+- **Any native WLED effect**: the strip runs that WLED effect continuously on its own WLED Segment (`fx`/`sx`/`col` via the JSON API) — the Pi does not drive it beat-by-beat. Requires WLED to have a Segment defined matching that strip's LED range (see Installation). Native effects share the device with any strip using a reactive/Meteor pulse; WLED's own effect rendering is suppressed while any DRGB realtime stream is active.
 
-Ambient brightness (0–200, per strip) sets the idle glow shown between reactive pulses; it has no effect while a strip is in native-effect mode.
+Ambient brightness (0–200, per strip) sets the idle glow shown between pulses; it has no effect while a strip is in native-effect mode.
 
 ---
 
@@ -145,5 +149,5 @@ After setup:
 1. Copy `config.json.example` to `config.json`, edit `strips` to match your physical wiring (length/LED count/pin are informational, shown in the TIRAS screen) and set `wled_host`
 2. In the WLED web UI, set up the LED Preferences (Outputs) matching your strips' start/length/pin, and set the PSU current limit safely below your power supply's real max
 3. If any strip will use a native WLED effect (not the default reactive pulse), also define a matching WLED **Segment** for it (same LED range as the strip) — required for per-strip `fx` control
-4. Connect the Pi to your WLED controller's network from the SISTEMA menu, or pre-set `wled_host` in `config.json`
+4. Set up WiFi/Ethernet connectivity between the Pi and your WLED controller ahead of time via NetworkManager (see Networking) and set `wled_host` in `config.json` — there is no on-device WiFi setup menu
 5. `sudo reboot`
