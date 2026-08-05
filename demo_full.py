@@ -72,7 +72,7 @@ def on_levels(levels):
     audio_sync.send(levels, analyzer.band_centers, gain=gain, threshold=threshold)
 
     for strip in config["strips"]:
-        if (not strip.get("active", True) or strip["fx"] != "reactive"
+        if (not strip.get("active", True) or strip["fx"] not in ("reactive", "meteor_triggered")
                 or strip["source"] not in ("audio", "both")):
             continue
         seg_id = strip["id"]
@@ -81,11 +81,13 @@ def on_levels(levels):
 
         if level >= threshold and _beat_armed.get(seg_id, True):
             _beat_armed[seg_id] = False
+            style = "meteor" if strip["fx"] == "meteor_triggered" else "classic"
             wled.trigger(
                 seg_ids=[idx], velocity=level, color=tuple(strip["pulse_color"]),
                 reverse=strip.get("pulse_reverse", global_reverse),
                 pulse_velocity=strip["pulse_velocity"], pulse_tail=strip["pulse_tail"],
-                pulse_sparkle=strip.get("sparkle", 0),
+                pulse_sparkle=strip.get("sparkle", 0) if style == "classic" else 0,
+                style=style,
             )
         elif level < threshold * 0.55:
             _beat_armed[seg_id] = True
@@ -110,11 +112,12 @@ def on_midi(msg, device_name):
     if midi_relevant:
         audio_sync.note_on(velocity)
 
-    # Pulso DRGB reactivo: solo para tiras en modo "reactive" (las de modo
-    # preset no reciben pixeles nuestros, para no tapar el efecto nativo).
+    # Trigger (pulso DRGB o reinicio de efecto nativo): solo para tiras en
+    # modo "reactive"/"meteor_triggered" (las de modo native effect fijo no
+    # reciben triggers, para no tapar su efecto continuo).
     matching = [
         strip for strip in config["strips"]
-        if strip.get("active", True) and strip["fx"] == "reactive"
+        if strip.get("active", True) and strip["fx"] in ("reactive", "meteor_triggered")
         and strip["source"] in ("midi", "both")
         and (strip["midi_channel"] == "all" or strip["midi_channel"] == ch)
         and (strip.get("midi_device", "all") in ("all", device_name))
@@ -125,11 +128,14 @@ def on_midi(msg, device_name):
     router.flash(velocity=velocity, segments=[s["id"] for s in matching])
 
     for strip in matching:
+        idx = cfg.animator_index(config, strip["id"])
+        style = "meteor" if strip["fx"] == "meteor_triggered" else "classic"
         wled.trigger(
-            seg_ids=[cfg.animator_index(config, strip["id"])], velocity=velocity, color=tuple(strip["pulse_color"]),
+            seg_ids=[idx], velocity=velocity, color=tuple(strip["pulse_color"]),
             reverse=strip.get("pulse_reverse", global_reverse),
             pulse_velocity=strip["pulse_velocity"], pulse_tail=strip["pulse_tail"],
-            pulse_sparkle=strip.get("sparkle", 0),
+            pulse_sparkle=strip.get("sparkle", 0) if style == "classic" else 0,
+            style=style,
         )
 
 

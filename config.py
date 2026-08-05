@@ -26,6 +26,7 @@ BEHAVIOR_DEFAULTS = {
     "sparkle": 0,
     "fx": "reactive",
     "fx_speed": 128,
+    "meteor_multicolor": True,
     "bri_floor": 0,
     "active": True,
 }

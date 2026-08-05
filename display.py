@@ -80,6 +80,7 @@ FIELD_LABELS = {
     "tail": "Cola",
     "sparkle": "Sparkle",
     "reverse": "Reversa",
+    "meteor_multicolor": "Meteor multicolor",
     "bri_floor": "Brillo amb.",
 }
 
@@ -108,10 +109,21 @@ ROOT_PAGES = ["TIRAS", "FUENTES", "WLED/RED", "PRESETS", "BRILLO", "GLOBAL", "ES
 DETAIL_VISIBLE_ROWS = 4
 
 # Campos que la pagina GLOBAL ajusta de forma relativa (+delta*step) en las
-# 4 tiras a la vez. "bri_floor" aplica siempre; velocity/tail/sparkle solo
-# a tiras en modo "reactive" (en modo native effect no tienen sentido - ver
-# _adjust_field/_strip_fields).
+# 4 tiras a la vez. "bri_floor" aplica siempre; "velocity"/"tail" a tiras
+# "reactive" o "meteor_triggered" (las dos las usan - en meteor "tail"
+# controla el largo de la cola por decaimiento, ver
+# WLEDAnimator._meteor_decay_range); "sparkle" solo a "reactive" (no existe
+# concepto de sparkle en el render meteor); ninguno aplica en modo native
+# effect fijo (fx=int).
 GLOBAL_FIELDS = ["velocity", "tail", "sparkle", "bri_floor"]
+
+
+def _global_field_applies(strip, key):
+    if key == "bri_floor":
+        return True
+    if key == "sparkle":
+        return strip["fx"] == "reactive"
+    return strip["fx"] in ("reactive", "meteor_triggered")
 
 LONG_PRESS_K1 = 1.2
 LONG_PRESS_K2 = 1.5
@@ -193,8 +205,10 @@ def _sync_all_strips_to_wled():
             continue
         idx = cfg.animator_index(_config, strip["id"])
         _wled.set_segment_ambient(idx, strip["bri_floor"], strip["pulse_color"])
-        if strip["fx"] != "reactive":
-            _wled.set_segment_effect(idx, strip["fx"], strip.get("fx_speed"), strip["pulse_color"])
+        if strip["fx"] == "meteor_triggered":
+            _apply_meteor_style(strip, idx)
+        elif strip["fx"] != "reactive":
+            _wled.set_segment_effect(idx, strip["fx"], sx=strip.get("fx_speed"), color=strip["pulse_color"])
 
 
 def _apply_scene_and_sync(index):
@@ -263,26 +277,46 @@ def _strip_fields(strip):
     if strip["source"] in ("midi", "both"):
         fields.append("midi_channel")
         fields.append("midi_device")
-    fields += ["color", "fx", "velocity"]
+    fields += ["color", "fx"]
     if strip["fx"] == "reactive":
-        fields.append("tail")
-        fields.append("sparkle")
+        fields += ["velocity", "tail", "sparkle"]
         if "pulse_reverse" in strip:  # solo Tira 3 y Tira 4 (ver cfg.REVERSIBLE_STRIP_IDS)
             fields.append("reverse")
+    elif strip["fx"] == "meteor_triggered":
+        fields += ["velocity", "tail", "meteor_multicolor"]
+    else:
+        fields.append("velocity")  # fx_speed, efecto nativo continuo
     fields.append("bri_floor")
     return fields
 
 
 def _fx_options():
-    return ["reactive"] + list(range(len(_wled.effects)))
+    return ["reactive", "meteor_triggered"] + list(range(len(_wled.effects)))
 
 
 def _fx_label(fx):
     if fx == "reactive":
         return "Pulso reactivo"
+    if fx == "meteor_triggered":
+        return "Meteor disparado"
     if _wled.effects and 0 <= fx < len(_wled.effects):
         return _wled.effects[fx][:16]
     return f"FX {fx}"
+
+
+def _apply_meteor_style(strip, idx):
+    """Activa el render tipo Meteor (rastro con decaimiento aleatorio, ver
+    WLEDAnimator.set_segment_meteor) para esta tira. Reemplaza un intento
+    anterior de disparar el efecto nativo Meteor de WLED via HTTP, que no
+    funcionaba: WLED se queda en modo "live" global mientras cualquier otra
+    tira use el pulso reactivo (suprime cualquier efecto nativo en
+    cualquier segmento), y ademas la variante de Meteor guardada por el
+    usuario no tiene una posicion reseteable (se calcula del reloj interno
+    de WLED, no de un contador) - ver docstring de wled_animator.py."""
+    if idx is None:
+        return
+    _wled.set_segment_meteor(idx, True, strip.get("meteor_multicolor", True), strip["pulse_color"],
+                              tail=strip["pulse_tail"])
 
 
 def _palette_index(color):
@@ -310,13 +344,15 @@ def _field_value_str(strip, key):
     if key == "fx":
         return _fx_label(strip["fx"])
     if key == "velocity":
-        return str(strip["pulse_velocity"]) if strip["fx"] == "reactive" else str(strip["fx_speed"])
+        return str(strip["pulse_velocity"]) if strip["fx"] in ("reactive", "meteor_triggered") else str(strip["fx_speed"])
     if key == "tail":
         return str(strip["pulse_tail"])
     if key == "sparkle":
         return str(strip.get("sparkle", 0))
     if key == "reverse":
         return "si" if strip.get("pulse_reverse", True) else "no"
+    if key == "meteor_multicolor":
+        return "si" if strip.get("meteor_multicolor", True) else "no"
     if key == "bri_floor":
         return str(strip["bri_floor"])
     return ""
@@ -346,27 +382,39 @@ def _adjust_field(strip, key, delta):
         strip["pulse_color"] = list(COLOR_PALETTE[pidx][1])
         if idx is not None:
             _wled.set_segment_ambient(idx, strip["bri_floor"], strip["pulse_color"])
-            if strip["fx"] != "reactive":
-                _wled.set_segment_effect(idx, strip["fx"], strip["fx_speed"], strip["pulse_color"])
+            if strip["fx"] == "meteor_triggered":
+                _apply_meteor_style(strip, idx)
+            elif strip["fx"] != "reactive":
+                _wled.set_segment_effect(idx, strip["fx"], sx=strip["fx_speed"], color=strip["pulse_color"])
     elif key == "fx":
         options = _fx_options()
         cur_idx = options.index(strip["fx"]) if strip["fx"] in options else 0
+        old_fx = strip["fx"]
         strip["fx"] = options[(cur_idx + delta) % len(options)]
-        if strip["fx"] != "reactive" and idx is not None:
-            _wled.set_segment_effect(idx, strip["fx"], strip["fx_speed"], strip["pulse_color"])
+        if old_fx == "meteor_triggered" and strip["fx"] != "meteor_triggered" and idx is not None:
+            _wled.set_segment_meteor(idx, False)
+        if strip["fx"] == "meteor_triggered":
+            _apply_meteor_style(strip, idx)
+        elif strip["fx"] != "reactive" and idx is not None:
+            _wled.set_segment_effect(idx, strip["fx"], sx=strip["fx_speed"], color=strip["pulse_color"])
     elif key == "velocity":
-        if strip["fx"] == "reactive":
+        if strip["fx"] in ("reactive", "meteor_triggered"):
             strip["pulse_velocity"] = int(_clamp_step(strip["pulse_velocity"], delta, VEL_STEP, VEL_MIN, VEL_MAX, 0))
         else:
             strip["fx_speed"] = int(_clamp_step(strip["fx_speed"], delta, FX_SPEED_STEP, FX_SPEED_MIN, FX_SPEED_MAX, 0))
             if idx is not None:
-                _wled.set_segment_effect(idx, strip["fx"], strip["fx_speed"], strip["pulse_color"])
+                _wled.set_segment_effect(idx, strip["fx"], sx=strip["fx_speed"], color=strip["pulse_color"])
     elif key == "tail":
         strip["pulse_tail"] = int(_clamp_step(strip["pulse_tail"], delta, TAIL_STEP, TAIL_MIN, TAIL_MAX, 0))
+        if strip["fx"] == "meteor_triggered":
+            _apply_meteor_style(strip, idx)
     elif key == "sparkle":
         strip["sparkle"] = int(_clamp_step(strip.get("sparkle", 0), delta, SPARKLE_STEP, SPARKLE_MIN, SPARKLE_MAX, 0))
     elif key == "reverse":
         strip["pulse_reverse"] = not strip.get("pulse_reverse", True)
+    elif key == "meteor_multicolor":
+        strip["meteor_multicolor"] = not strip.get("meteor_multicolor", True)
+        _apply_meteor_style(strip, idx)
     elif key == "bri_floor":
         strip["bri_floor"] = int(_clamp_step(strip["bri_floor"], delta, FLOOR_STEP, FLOOR_MIN, FLOOR_MAX, 0))
         if idx is not None:
@@ -428,8 +476,8 @@ def on_encoder(n, delta):
             elif n in (1, 3):
                 key = GLOBAL_FIELDS[global_field_idx]
                 for strip in _config["strips"]:
-                    if key != "bri_floor" and strip["fx"] != "reactive":
-                        continue  # velocity/tail/sparkle no aplican en modo native effect
+                    if not _global_field_applies(strip, key):
+                        continue
                     _adjust_field(strip, key, delta)
         elif page == 6:  # ESCENAS
             if n == 1:
@@ -658,7 +706,7 @@ def _render_global(draw):
     _header(draw, "GLOBAL", FIELD_LABELS[key])
     for i, strip in enumerate(_sorted_strips()):
         y = LINE_H * (i + 1)
-        if key != "bri_floor" and strip["fx"] != "reactive":
+        if not _global_field_applies(strip, key):
             val = "(native)"
         else:
             val = _field_value_str(strip, key)
