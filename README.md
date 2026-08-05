@@ -4,6 +4,8 @@ Audio and MIDI reactive LED controller built on a **Raspberry Pi 4** with a **mo
 
 The system runs fully autonomous — no computer needed. Boot the Pi and everything starts automatically: audio analysis, MIDI detection, WLED connection, and OLED menu.
 
+[![Demo](https://img.youtube.com/vi/l5sBzIcei7o/hqdefault.jpg)](https://youtube.com/shorts/l5sBzIcei7o)
+
 ---
 
 ## Hardware
