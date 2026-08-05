@@ -1,4 +1,4 @@
-# norns-wled-controller
+# audio-midi-reactive-wled-controller
 
 Audio and MIDI reactive LED controller built on a **Raspberry Pi 4** with a **monome norns shield**, controlling up to **4 WS2812B LED strips** via **WLED** (tested with a GLEDOPTO 4-channel Ethernet controller).
 
@@ -139,7 +139,7 @@ Ambient brightness (0–200, per strip) sets the idle glow shown between pulses;
 ## Installation
 
 ```bash
-git clone https://github.com/Ivanciko/norns-wled-controller ~/wled-controller
+git clone https://github.com/Ivanciko/audio-midi-reactive-wled-controller ~/wled-controller
 cd ~/wled-controller
 chmod +x setup.sh
 ./setup.sh
